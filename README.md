@@ -91,13 +91,17 @@ To build from source, use Node ≥ 22 and the Yarn version pinned in `package.js
 
 ```bash
 corepack enable
-COREPACK_NPM_REGISTRY=https://npm.dev.wixpress.com corepack install
+corepack install
 yarn install --immutable
 yarn build
 yarn test
 ```
 
-Fresh installs require access to the Wix package registry configured in `.yarnrc.yml`.
+Fresh installs use the public npm registry.
+
+`yarn install` sets up a pre-commit hook that strips registry-specific tarball URLs from staged
+`yarn.lock` changes. Run `yarn sanitize:lockfile` to sanitize it manually; CI checks that these URLs
+are absent before installing dependencies.
 
 The coverage badge refreshes automatically after each merge or push to `master`, once the unit tests
 pass. GitHub Actions commits the updated badge only when its value changes. Repository branch rules
