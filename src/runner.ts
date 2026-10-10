@@ -774,16 +774,18 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       failingTestsByFile.set(t.path, set);
     }
     const cov = this.store.coverageFor(p);
+    const sourceSelection = isTest ? undefined : this.store.sourceSelection(p, text);
     const result = selectAffected({
       changedFile: p,
       changedLines,
       isTestFile: isTest,
       analysis,
+      sourceSelection,
       execBy: this.store.execBy(),
       loadedBy: this.store.loadedBy(),
       inverseStaticGraph: this.inverseGraph.get(projectId!) ?? null,
       testFiles,
-      runtimeTrackedTestFiles: new Set(this.store.allFiles().filter(f => f.projectId === projectId && this.store.coveredSourcesOf(f.path).size > 0).map(f => f.path)),
+      runtimeTrackedTestFiles: sourceSelection?.trackedFiles ?? new Set(this.store.allFiles().filter(f => f.projectId === projectId && this.store.coveredSourcesOf(f.path).size > 0).map(f => f.path)),
       failingTestsByFile,
       coverage: cov?.meta ? { meta: cov.meta, stmtHitBy: cov.stmtHitBy } : null,
       toolchainFiles: this.registry.toolchainFiles(projectId!),

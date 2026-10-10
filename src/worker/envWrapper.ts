@@ -23,10 +23,10 @@
  * No Jest imports; everything Jest-shaped is injected or read off `this`.
  */
 import * as util from 'util';
-import { makeTestKey, type ConsoleMsg, type WorkerFlags } from '../core/protocol';
+import { makeTestKey, type ConsoleMsg, type WorkerFlags, type CoverageHit } from '../core/protocol';
 import type { OutgoingMsg } from './ipc';
 import {
-  buildCoverageMeta, coverageHash, diffSnapshots, hitBranchArms, hitStatements, takeSnapshot,
+  buildCoverageMeta, coverageHash, diffSnapshots, hitBranchArms, hitStatements, hitFunctions, takeSnapshot,
   type CoverageMap, type CoverageSnapshot, type IstanbulFileCoverage, type TraceMappingLike,
 } from './coverageDiff';
 import { stripAnsi, topUserFrame } from './stacks';
@@ -61,7 +61,7 @@ export interface EnvRunContext {
 }
 
 let runContext: EnvRunContext | undefined;
-export function setRunContext(ctx: EnvRunContext | undefined): void { runContext = ctx; }
+export function setRunContext(ctx: EnvRunContext | undefined): void { runContext = ctx; resetMetaSent(); }
 export function getRunContext(): EnvRunContext | undefined { return runContext; }
 
 /** Limits (Wallaby-like): keep IPC bounded under chatty tests. */
@@ -83,16 +83,18 @@ const metaSent = new Set<string>();
 export function resetMetaSent(): void { metaSent.clear(); }
 
 /** Sends `coverageMeta` for an instrumented file unless this process already did. */
-export function ensureCoverageMeta(send: (m: OutgoingMsg) => void, fc: IstanbulFileCoverage, traceMapping?: TraceMappingLike): void {
-  if (!fc || typeof fc !== 'object' || !fc.statementMap) return;
-  const key = `${fc.path}\0${coverageHash(fc)}`;
-  if (metaSent.has(key)) return;
-  metaSent.add(key);
+export function ensureCoverageMeta(send: (m: OutgoingMsg) => void, fc: IstanbulFileCoverage, traceMapping?: TraceMappingLike): string | undefined {
+  if (!fc || typeof fc !== 'object' || !fc.statementMap) return undefined;
+  const meta = buildCoverageMeta(fc, traceMapping);
+  const key = `${fc.path}\0${meta.revision ?? meta.hash}`;
+  if (metaSent.has(key)) return meta.revision;
   try {
-    send({ type: 'coverageMeta', ...buildCoverageMeta(fc, traceMapping) });
+    send({ type: 'coverageMeta', ...meta });
+    metaSent.add(key);
+    return meta.revision;
   } catch (e) {
-    metaSent.delete(key);
     runContext?.onError?.('coverageMeta', e);
+    return undefined;
   }
 }
 
@@ -155,6 +157,9 @@ interface InstanceState {
   valueHits: Map<string, number>;
   valueCountFile: number;
   fileCoverageEmitted: boolean;
+  shared: Map<string, CoverageHit>;
+  sharedSnap?: CoverageSnapshot;
+  trackingComplete: boolean;
 }
 
 const stateOf = new WeakMap<object, InstanceState>();
@@ -162,7 +167,7 @@ const stateOf = new WeakMap<object, InstanceState>();
 function createInstanceState(testPath: string, deps: EnvDeps): InstanceState {
   return {
     testPath, deps, dupOf: new WeakMap(), nameCounts: new Map(), consoleCountTest: 0, consoleCountFile: 0,
-    valueHits: new Map(), valueCountFile: 0, fileCoverageEmitted: false,
+    valueHits: new Map(), valueCountFile: 0, fileCoverageEmitted: false, shared: new Map(), trackingComplete: true,
   };
 }
 
@@ -192,10 +197,26 @@ function handleEvent(env: any, st: InstanceState, event: any, state: any): void 
     case 'test_start':
       onTestStart(env, st, ctx, event);
       break;
+    case 'hook_start':
+      if (event.hook?.type === 'beforeAll' || event.hook?.type === 'afterAll') st.sharedSnap = takeSnapshot(coverageOf(env));
+      break;
+    case 'hook_success':
+    case 'hook_failure':
+      if (st.sharedSnap) { recordShared(env, st, ctx, st.sharedSnap); st.sharedSnap = undefined; }
+      if (event.name === 'hook_failure') st.trackingComplete = false;
+      break;
+    case 'test_skip':
+    case 'test_todo':
+      st.current = undefined; st.testSnap = undefined;
+      break;
     case 'test_done':
       onTestDone(env, st, ctx);
       break;
     case 'run_finish':
+      recordShared(env, st, ctx, st.baseline);
+      emitShared(st, ctx);
+      emitFileCoverage(env, st, ctx);
+      break;
     case 'teardown':
       emitFileCoverage(env, st, ctx);
       break;
@@ -225,13 +246,42 @@ function onRunStart(env: any, st: InstanceState, ctx: EnvRunContext | undefined)
   if (!ctx || !ctx.flags.coverage) return;
   const cov = coverageOf(env);
   const files = cov ? Object.keys(cov) : [];
-  for (const f of files) ensureCoverageMeta(ctx.send, cov![f], st.deps.traceMapping);
+  recordShared(env, st, ctx);
+  st.baseline = takeSnapshot(cov);
   ctx.send({ type: 'fileLoad', runId: ctx.runId, path: st.testPath, files });
+}
+
+/** Shared hooks can load additional sources; empty hits still prove a source was observed. */
+function recordShared(env: any, st: InstanceState, ctx: EnvRunContext | undefined, before?: CoverageSnapshot): void {
+  if (!ctx || !ctx.flags.coverage) return;
+  const cov = coverageOf(env);
+  if (!cov) return;
+  const changes = before ? new Map(diffSnapshots(before, cov).map(f => [f.path, f])) : undefined;
+  for (const [path, fc] of Object.entries(cov)) {
+    const revision = ensureCoverageMeta(ctx.send, fc, st.deps.traceMapping);
+    const key = `${path}\0${revision ?? coverageHash(fc)}`;
+    const prior = st.shared.get(key);
+    const hit = changes ? changes.get(path) : { stmts: hitStatements(fc), fns: hitFunctions(fc) };
+    st.shared.set(key, { path, revision, hash: coverageHash(fc),
+      stmts: [...new Set([...(prior?.stmts ?? []), ...(hit?.stmts ?? [])])],
+      fns: [...new Set([...(prior?.fns ?? []), ...(hit?.fns ?? [])])],
+    });
+  }
+}
+
+function emitShared(st: InstanceState, ctx: EnvRunContext | undefined): void {
+  if (!ctx || !ctx.flags.coverage) return;
+  ctx.send({ type: 'fileLoad', runId: ctx.runId, path: st.testPath,
+    files: [...new Set([...st.shared.values()].map(f => f.path))], shared: [...st.shared.values()],
+    complete: ctx.flags.perTestCoverage && st.trackingComplete && !ctx.cancelled,
+  });
 }
 
 function onTestStart(env: any, st: InstanceState, ctx: EnvRunContext | undefined, event: any): void {
   const test = event?.test;
   if (!test || !ctx) return;
+  recordShared(env, st, ctx, st.baseline);
+  st.baseline = takeSnapshot(coverageOf(env));
   const fullName = fullNameOfTest(test);
   const selection = ctx.selectionFor(st.testPath);
   if (ctx.cancelled || (selection && !selection.has(fullName))) {
@@ -254,11 +304,13 @@ function onTestDone(env: any, st: InstanceState, ctx: EnvRunContext | undefined)
   if (!cur || !ctx) return;
   if (ctx.flags.coverage && ctx.flags.perTestCoverage) {
     const cov = coverageOf(env);
-    const files = diffSnapshots(st.testSnap ?? new Map(), cov);
-    for (const d of files) ensureCoverageMeta(ctx.send, cov![d.path], st.deps.traceMapping);
+    const files = diffSnapshots(st.testSnap ?? new Map(), cov).map(d => ({ ...d,
+      revision: ensureCoverageMeta(ctx.send, cov![d.path], st.deps.traceMapping), hash: coverageHash(cov![d.path]),
+    }));
     ctx.send({ type: 'testCoverage', runId: ctx.runId, path: st.testPath, testKey: cur.testKey, files });
   }
   st.testSnap = undefined;
+  st.baseline = takeSnapshot(coverageOf(env));
 }
 
 function emitFileCoverage(env: any, st: InstanceState, ctx: EnvRunContext | undefined): void {
@@ -268,8 +320,8 @@ function emitFileCoverage(env: any, st: InstanceState, ctx: EnvRunContext | unde
   const files = cov
     ? Object.keys(cov).map(p => {
       const fc = cov[p];
-      ensureCoverageMeta(ctx.send, fc, st.deps.traceMapping);
-      return { path: p, hash: coverageHash(fc), hitStmts: hitStatements(fc), hitBranchArms: hitBranchArms(fc) };
+      const revision = ensureCoverageMeta(ctx.send, fc, st.deps.traceMapping);
+      return { path: p, revision, hash: coverageHash(fc), hitStmts: hitStatements(fc), hitBranchArms: hitBranchArms(fc) };
     })
     : [];
   ctx.send({ type: 'fileCoverage', runId: ctx.runId, path: st.testPath, files });
@@ -363,7 +415,7 @@ const wrappedClasses = new WeakMap<Function, { cls: any; deps: EnvDeps }>();
 function makeHandler(self: any, baseHandle: ((event: any, state: any) => unknown) | undefined) {
   return function handleTestEvent(event: any, state: any): unknown {
     const st = stateOf.get(self);
-    const ours = () => { if (st) { try { handleEvent(self, st, event, state); } catch (e) { runContext?.onError?.(`event ${event?.name}`, e); } } };
+    const ours = () => { if (st) { try { handleEvent(self, st, event, state); } catch (e) { st.trackingComplete = false; runContext?.onError?.(`event ${event?.name}`, e); } } };
     if (!baseHandle) { ours(); return undefined; }
     if (SYNC_EVENTS.has(event?.name)) { ours(); return baseHandle.call(self, event, state); }
     const r = baseHandle.call(self, event, state);

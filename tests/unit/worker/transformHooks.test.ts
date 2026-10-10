@@ -1,5 +1,6 @@
 import { hasCachePruneSeam, installHooksOnPrototype, pruneTransformCache, type ProbeModule } from '../../../src/worker/transformHooks';
 import { isEnvironmentClass } from '../../../src/worker/envWrapper';
+import { capturedSource, resetSourceCapture } from '../../../src/worker/sourceCapture';
 
 class FakeEnv {
   global: Record<string, unknown> = {};
@@ -28,6 +29,27 @@ function makeProto(mods: Record<string, unknown>) {
 }
 
 describe('transformHooks', () => {
+  it('captures cached original source for sync/async entry points without changing their results', async () => {
+    resetSourceCapture();
+    const result = { code: 'compiled', originalCode: 'const original = 1;' };
+    const proto = {
+      transform: jest.fn(() => result),
+      transformAsync: jest.fn(async () => result),
+      transformSource: jest.fn(() => result),
+      transformSourceAsync: jest.fn(async () => result),
+    };
+    installHooksOnPrototype(proto, { liveComments: false, envDeps: {} });
+    for (const method of Object.keys(proto)) {
+      expect(await (proto as any)[method]('/source.js')).toBe(result);
+      expect(capturedSource('/source.js')).toBe(result.originalCode);
+    }
+    result.originalCode = 'const different = 2;';
+    (proto.transform as any)('/source.js');
+    expect(capturedSource('/source.js')).toBeUndefined(); // a file execution mixed revisions
+    resetSourceCapture();
+    (proto.transform as any)('/source.js');
+    expect(capturedSource('/source.js')).toBe(result.originalCode);
+  });
   it('wraps environment classes returned by requireAndTranspileModule and leaves everything else alone', async () => {
     const runner = () => 'framework';
     const { proto, log } = makeProto({ '/env.js': FakeEnv, '/runner.js': runner });

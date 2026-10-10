@@ -42,6 +42,13 @@ export interface FileRecord {
 /** Static shape of an instrumented source file (from CoverageMetaMsg). */
 export interface CoverageMeta {
   hash: string;
+  revision?: string;
+  sourceText?: string;
+  originalCoordinates?: boolean;
+  stmtStartColumn?: number[];
+  stmtEndColumn?: number[];
+  fnDeclColumn?: number[];
+  fnEndColumn?: number[];
   stmtStartLine: number[];
   stmtEndLine: number[];
   fnDeclLine: number[];
@@ -55,6 +62,8 @@ export interface CoverageMeta {
 /** Dynamic coverage of one source file, aggregated over the latest run of each test file. */
 export interface FileCoverage {
   meta?: CoverageMeta;
+  /** Old contributions that cannot safely be projected into the current metadata. */
+  stale?: boolean;
   /** statementId -> testKeys that executed it (per-test mode) */
   stmtHitBy: Map<number, Set<string>>;
   /** statementId -> test FILE paths whose latest run hit it (file-level mode / union). */

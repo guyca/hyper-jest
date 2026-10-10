@@ -31,6 +31,8 @@ import { DEFAULT_SETTINGS, type HyperJestSettings } from '../../../src/core/sett
 import { PROTOCOL_VERSION, type HostToWorker, type ProjectSpec, type RunMsg, type WorkerToHost } from '../../../src/core/protocol';
 import * as cliEngine from '../../../src/cliEngine';
 import { __state, makeDocument, Uri } from '../results/fakeVscode';
+import { metadata } from '../results/coverageRevisionFixtures';
+import { makeTestKey } from '../../../src/core/protocol';
 
 const P1 = 'p1';
 const P2 = 'p2';
@@ -111,6 +113,31 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 describe('RunCoordinator affected selection', () => {
   afterEach(() => jest.clearAllMocks());
+
+  it('dispatches function names using recorded source text rather than the current editor buffer', async () => {
+    const { runner, store, w1, completeAll } = setup();
+    await runner.start();
+    const text = 'function a() { return 1; }\nfunction b() { return 2; }\nmodule.exports = { a, b };';
+    const meta = metadata(text, SRC);
+    const apply = (m: any) => store.apply({ v: PROTOCOL_VERSION, ...m }, P1);
+    store.registerRun('baseline', [{ path: A }]);
+    apply({ type: 'fileStart', runId: 'baseline', path: A });
+    apply({ type: 'coverageMeta', ...meta });
+    for (const [name, fn] of [['a', 0], ['b', 1]] as const) {
+      const testKey = makeTestKey(A, name, 0);
+      apply({ type: 'testCoverage', runId: 'baseline', path: A, testKey, files: [{ path: SRC, revision: meta.revision, stmts: [fn], fns: [fn] }] });
+      apply({ type: 'testResult', runId: 'baseline', path: A, testKey, fullName: name, title: name, ancestorTitles: [], status: 'passed', duration: 1, location: null, failures: [], invocations: 1 });
+    }
+    apply({ type: 'fileLoad', runId: 'baseline', path: A, files: [SRC], complete: true, shared: [{ path: SRC, revision: meta.revision, stmts: [], fns: [] }] });
+    apply({ type: 'fileResult', runId: 'baseline', path: A, status: 'passed', numPassing: 2 });
+    apply({ type: 'runComplete', runId: 'baseline', wasInterrupted: false });
+    const edited = text.replace('return 1', 'return 3');
+    __state.textDocuments.push(makeDocument(SRC, edited));
+    expect(await runner.runAffected(SRC, edited, 'onType')).toMatchObject({ runs: [{ path: A, names: ['a'] }] });
+    await tick();
+    expect(w1.runs()[0].tests).toEqual([{ path: A, names: ['a'] }]);
+    completeAll(); await tick(); runner.dispose(); store.dispose();
+  });
 
   it('selects never-run spec files the static graph knows (graphResult.testFiles)', async () => {
     const { runner, w1, workerMsg } = setup();

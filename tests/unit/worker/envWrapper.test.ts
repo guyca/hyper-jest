@@ -53,6 +53,34 @@ describe('envWrapper', () => {
   beforeEach(() => resetMetaSent());
   afterEach(() => setRunContext(undefined));
 
+  it('separates initialization and shared hooks from individual test windows', async () => {
+    const { ctx, out } = ctxWith();
+    setRunContext(ctx);
+    const W = wrapEnvironment(BareEnv, {});
+    const env = new W({}, { testPath: '/t/hooks.test.js' });
+    const file = { ...cov('/t/lib.js', [1]), f: { 0: 1, 1: 0, 2: 0, 3: 0 } };
+    env.global.__coverage__ = { '/t/lib.js': file };
+    const event = async (name: string, extra = {}) => env.handleTestEvent({ name, ...extra }, {});
+    await event('run_start');
+    await event('hook_start', { hook: { type: 'beforeAll' } });
+    file.f[1]++;
+    await event('hook_success');
+    const test = makeTest('t', { name: 'ROOT' });
+    await event('test_start', { test });
+    // beforeEach, test and afterEach are all inside this window.
+    file.f[2]++;
+    await event('test_done', { test });
+    await event('hook_start', { hook: { type: 'afterAll' } });
+    file.f[3]++;
+    await event('hook_success');
+    await event('run_finish');
+    const perTest = out.find(m => m.type === 'testCoverage') as Extract<WorkerToHost, { type: 'testCoverage' }>;
+    expect(perTest.files[0].fns).toEqual([2]);
+    const shared = out.filter(m => m.type === 'fileLoad').at(-1) as Extract<WorkerToHost, { type: 'fileLoad' }>;
+    expect(shared.complete).toBe(true);
+    expect(shared.shared?.[0].fns).toEqual([0, 1, 3]);
+  });
+
   it('detects environment classes and memoises wrappers', () => {
     expect(isEnvironmentClass(BaseEnv)).toBe(true);
     expect(isEnvironmentClass(BareEnv)).toBe(true);
@@ -104,7 +132,7 @@ describe('envWrapper', () => {
     await env.handleTestEvent({ name: 'test_done', test: t1 }, state);
     const c1 = out.find(m => m.type === 'testCoverage') as Extract<WorkerToHost, { type: 'testCoverage' }>;
     expect(c1.testKey).toBe('/t/a.test.js\0dup\x000');
-    expect(c1.files).toEqual([{ path: '/t/lib.js', stmts: [1] }]);
+    expect(c1.files).toMatchObject([{ path: '/t/lib.js', stmts: [1] }]);
     const con = out.find(m => m.type === 'console') as Extract<WorkerToHost, { type: 'console' }>;
     expect(con).toMatchObject({ level: 'log', text: 'hello world', testKey: '/t/a.test.js\0dup\x000', path: '/t/a.test.js' });
     expect(con.file).toBe(__filename);
@@ -119,7 +147,7 @@ describe('envWrapper', () => {
     await env.handleTestEvent({ name: 'test_done', test: t2 }, state);
     const c2 = out.filter(m => m.type === 'testCoverage')[1] as Extract<WorkerToHost, { type: 'testCoverage' }>;
     expect(c2.testKey).toBe('/t/a.test.js\0dup\x001');
-    expect(c2.files).toEqual([{ path: '/t/lib.js', stmts: [1, 2] }]);
+    expect(c2.files).toMatchObject([{ path: '/t/lib.js', stmts: [1, 2] }]);
 
     await env.handleTestEvent({ name: 'run_finish' }, state);
     await env.handleTestEvent({ name: 'teardown' }, state);

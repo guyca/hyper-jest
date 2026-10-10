@@ -8,6 +8,8 @@
 import { fork, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ResultStore } from '../../src/results/resultStore';
+import { selectAffected } from '../../src/core/affected';
 import {
   PROTOCOL_VERSION, type HostToWorker, type InitMsg, type ProjectSpec, type ReadyMsg, type RunCompleteMsg, type RunMsg, type TestResultMsg, type WorkerFlags,
   type WorkerToHost,
@@ -217,6 +219,75 @@ d('warm worker (fixture, real jest 29.7)', () => {
     expect(files.find(f => f.path === greetTest)).toMatchObject({ status: 'passed', numPassing: 5, snapshot: expect.objectContaining({ added: 1 }) });
     expect(fs.existsSync(path.join(snapshotsDir, 'greet.test.js.snap'))).toBe(true);
   }, 60000);
+
+  it('narrows real imported functions across successive unsaved revisions and preserves skipped hits', async () => {
+    const store = new ResultStore();
+    const original = fs.readFileSync(mathSrc, 'utf8');
+    const runAndStore = async (tests: RunMsg['tests']) => {
+      const result = await w.run(tests, 'none');
+      store.registerRun(result.complete.runId, tests);
+      for (const message of result.msgs) store.apply(message, 'it-fixture');
+      return result;
+    };
+    const select = (text: string) => {
+      const sourceSelection = store.sourceSelection(mathSrc, text);
+      return selectAffected({ changedFile: mathSrc, changedLines: null, sourceSelection,
+        execBy: store.execBy(), loadedBy: store.loadedBy(), inverseStaticGraph: new Map([[mathSrc, new Set([mathTest])]]),
+        runtimeTrackedTestFiles: sourceSelection.trackedFiles, testFiles: new Set([mathTest]), failingTestsByFile: new Map(),
+        settings: { maxTestFilesPerEdit: 8, alwaysRunFailing: false, useStaticGraph: true, trackFileLoading: true },
+      });
+    };
+    try {
+      const initial = await runAndStore([{ path: mathTest }]);
+      const baseline = byType(initial.msgs, 'coverageMeta').find(m => m.path === mathSrc)!;
+      const branchCount = store.coverageFor(mathSrc)!.branchArmHitByFile.size;
+      expect(baseline).toMatchObject({ sourceText: original, originalCoordinates: true, fnEndLine: [3, 10, 16, 20] });
+      const first = original.replace('return a + b;', 'const result = a + b;\n  return result;');
+      const affected = select(first);
+      expect(affected).toMatchObject({ kind: 'runs', runs: [{ path: mathTest, names: ['add adds negative numbers', 'add adds two numbers'] }] });
+      if (affected.kind !== 'runs') throw new Error('expected add selection');
+      w.send({ type: 'overlay', changes: [{ path: mathSrc, text: first, version: 201 }] });
+      const updated = await runAndStore(affected.runs);
+      expect(byType(updated.msgs, 'coverageMeta').find(m => m.path === mathSrc)?.sourceText).toBe(first);
+      expect(store.execBy().get(mathSrc)?.size).toBe(7);
+      expect(store.coverageFor(mathSrc)?.branchArmHitByFile.size).toBe(branchCount);
+      expect(store.coverageFor(mathSrc)?.stale).toBe(false);
+      const second = first.replace('return a / b;', 'return a / b + 0;');
+      const next = select(second);
+      expect(next).toMatchObject({ kind: 'runs', runs: [{ path: mathTest, names: ['divide divides', 'divide throws on zero'] }] });
+      if (next.kind !== 'runs') throw new Error('expected divide selection');
+      w.send({ type: 'overlay', changes: [{ path: mathSrc, text: second, version: 202 }] });
+      await runAndStore(next.runs);
+      expect(select(original)).toMatchObject({ kind: 'runs', runs: [{ path: mathTest, names: ['add adds negative numbers', 'add adds two numbers', 'divide divides', 'divide throws on zero'] }] });
+      expect(fs.readFileSync(mathSrc, 'utf8')).toBe(original);
+    } finally {
+      w.send({ type: 'overlay', changes: [{ path: mathSrc, text: null, version: 203 }] });
+      store.dispose();
+    }
+  }, 30000);
+
+  it('keeps module initialization and shared hooks broad, while attributing beforeEach to tests', async () => {
+    const store = new ResultStore();
+    const originalSpec = fs.readFileSync(mathTest, 'utf8');
+    const source = fs.readFileSync(mathSrc, 'utf8');
+    const editedSpec = `${originalSpec}\nadd(1, 2);\nbeforeAll(() => divide(6, 3));\nafterAll(() => classify(1));\nbeforeEach(() => require('../lib/math').neverCalled());\n`;
+    try {
+      w.send({ type: 'overlay', changes: [{ path: mathTest, text: editedSpec, version: 301 }] });
+      const run = await w.run([{ path: mathTest }], 'none');
+      store.registerRun(run.complete.runId, [{ path: mathTest }]);
+      for (const message of run.msgs) store.apply(message, 'it-fixture');
+      for (const [oldBody, newBody] of [['a + b', 'a + b + 0'], ['a / b', 'a / b + 0'], ["return 'positive'", "return 'other'"]]) {
+        expect(store.sourceSelection(mathSrc, source.replace(oldBody, newBody)).wholeFiles).toContain(mathTest);
+      }
+      const perTest = store.sourceSelection(mathSrc, source.replace('unreachable in tests', 'now reached'));
+      expect(perTest.wholeFiles.size).toBe(0);
+      expect(perTest.tests.size).toBe(7);
+      expect(perTest.trackedFiles).toContain(mathTest);
+    } finally {
+      w.send({ type: 'overlay', changes: [{ path: mathTest, text: null, version: 302 }] });
+      store.dispose();
+    }
+  }, 30000);
 
   it('re-runs a warm file in well under a second', async () => {
     const { msgs, complete, wallMs } = await w.run([{ path: greetTest }], 'new');

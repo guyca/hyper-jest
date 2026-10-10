@@ -509,7 +509,7 @@ Extension host (never loads Jest)                 Worker processes (project's no
 9. Running HyperJest and Wallaby on the same project double-runs tests.
 10. Rebuilding the extension needs the Wix registry (or the `~/.npm` cache / symlink fallback to `mobile-apps-relops-automations/node_modules`); the installed `.vsix` never needs the network.
 11. Inline rendering differences versus Wallaby: no argument-context prefix on `console.log` values, hover diff rendered as a code block rather than a coloured grammar, no live-updating side-by-side diff.
-12. Source-file edits select every test that executed the file (`execBy`), not only the tests that executed the edited function. Function-level narrowing needs coverage metadata keyed by the unsaved text and a stable function identity across edits; until then HyperJest over-selects, never under-selects.
+12. Source-function body edits narrow to tests that executed the affected functions, including ordinary imports, when complete per-test/shared-hook coverage and reliable source coordinates are available. Coverage revisions retain the compiled source and skipped tests' hits across edits. Structural/signature/export changes, syntax errors, module/shared-hook dependencies, missing maps and degraded/CLI tracking conservatively select whole files.
 13. While a test file has an unrecoverable syntax error, Run Line / Debug Line / Update Snapshot at line look the test up in the last parse that succeeded. If the breaking edit also shifted lines, the lookup can pick a neighbouring test or the whole file.
 14. Discovery's file walk and `package.json` parsing (about 120 ms on mobile-modules) still run on the extension-host thread; Node version probing is cached and asynchronous.
 

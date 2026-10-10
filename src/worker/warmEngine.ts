@@ -1,3 +1,4 @@
+import { resetSourceCapture } from './sourceCapture';
 /**
  * The warm in-band Jest engine (plan section "Warm engine"). One instance per worker process.
  *
@@ -510,6 +511,7 @@ export class WarmEngine {
   }
 
   private async runOne(run: ActiveRun, sel: RunTestSelection, g: Record<string, any>, index: number): Promise<void> {
+    resetSourceCapture();
     const cfg = this.configs[index];
     const context = await this.getContext(index);
     await this.pruneOverlay(index);
@@ -631,8 +633,8 @@ export class WarmEngine {
       const cov = result.coverage as CoverageMap;
       const files = Object.keys(cov).map(p => {
         const fc = cov[p];
-        ensureCoverageMeta(this.send, fc, this.envDeps.traceMapping);
-        return { path: p, hash: coverageHash(fc), hitStmts: hitStatements(fc), hitBranchArms: hitBranchArms(fc) };
+        const revision = ensureCoverageMeta(this.send, fc, this.envDeps.traceMapping);
+        return { path: p, revision, hash: coverageHash(fc), hitStmts: hitStatements(fc), hitBranchArms: hitBranchArms(fc) };
       });
       this.send({ type: 'fileCoverage', runId, path: testPath, files });
       ctx.fileCoverageSent.add(testPath);

@@ -39,9 +39,9 @@ semantics:
 | `fileStart` | file → `running`; opens the run generation `(runId, path)` |
 | `testStart` | remembered in `started(path)` (Explorer shows the spinner on that item) |
 | `testResult` | commits the `TestRecord` immediately (live UI) plus any per-test coverage / tagged console / value entries that arrived earlier. In a **narrowed** run (`names`), de-selected tests arrive as `pending`; their previous result is kept |
-| `testCoverage` | per-test statement hits; stashed until the test's result, merged if it arrives later |
-| `fileLoad` | module-scope loads; committed at `fileResult` into `loadedBy()` |
-| `coverageMeta` | statement/branch/function shape of a source file; a changed hash wipes that file's hits |
+| `testCoverage` | per-test statement/function hits bound to their source revision; stashed until the test's result, merged if it arrives later |
+| `fileLoad` | loaded sources plus initialization/shared-hook function hits and tracking completeness; committed at `fileResult` |
+| `coverageMeta` | immutable statement/branch/function shape plus compiled source text and revision identity; arrival never wipes skipped tests' hits |
 | `fileCoverage` | file-level union hits; committed at `fileResult` into `stmtHitByFile` / `branchArmHitByFile` |
 | `console` / `value` | inline entries keyed by `(file, line-1)`; tagged ones wait for their test, untagged ones for `fileResult`. Entries without a `line` are dropped |
 | `fileResult` | commits file-level data, replaces this test file's previous contributions (merged instead for narrowed runs), removes tests that an **unfiltered** run no longer reported, drops inline entries of older generations, clears stale marks set before the run started, records `lastRun(path)` |
@@ -68,11 +68,33 @@ semantics:
 `fileRecord(path)`, `test(testKey)`, `testsInFile(path)` (declaration order), `failingTests()`,
 `summary()` (`{passed, failed, pending, running, queued, staleFiles}`), `execBy()` (source →
 testKeys), `loadedBy()` (source → test files), `coverageFor(source)`, `coveredSourcesOf(testFile)`,
+`sourceSelection(path, text)` (function-level selection against each test's recorded revision),
 `entriesFor(path)`, `parsed(path)`, `staleInfo(path)`, `lastRun(path)`, `started(path)`,
 `allFiles()`, `allTests()`, `generation` (bumps on every mutation).
 
 Keys: `testKey = path\0fullName\0dupIndex` (`makeTestKey` / `parseTestKey` in protocol.ts).
 Runtime locations are 1-based (Jest); views and parsed ranges are 0-based (VS Code).
+
+### Source revisions and affected selection
+
+`CoverageHistory` retains the latest statement/function hits of each test against the exact source
+returned by Jest's transform cache. Revision identity includes both source content and coverage
+shape. New metadata is cached; only committed run data advances the display revision. Concurrent
+workers cannot reinterpret one revision's IDs against another's maps.
+
+For source edits, `sourceSelection(path, text)` compares each retained baseline with the new text.
+Only edits inside corresponding function bodies with reliable original coordinates narrow tests.
+Ordinary imports do not widen these selections when a complete run proves that initialization and
+shared hooks did not call the edited function. `beforeEach`/`afterEach` remain attributed to their
+tests; `beforeAll`/`afterAll` and execution between tests contribute whole-file dependencies.
+Missing tracking, signatures/exports/structure changes, syntax errors and uncertain maps retain
+conservative file selection, including the static graph and CLI fallback.
+
+Skipped tests keep their original revisions. Unchanged statement ranges and branch arms are
+projected into the displayed revision only when their matches are unique; ambiguous contributions
+remain stale. Aggregate contributions are carried forward when possible, and unreferenced source
+revisions are released once active runs finish. Failed loads and interruptions preserve prior
+dependencies; successful unfiltered runs remove tests that disappeared.
 
 ### Change notification
 

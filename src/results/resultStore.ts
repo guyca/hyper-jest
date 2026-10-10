@@ -29,6 +29,7 @@ import type {
 import { makeTestKey, parseTestKey } from '../core/protocol';
 import type { CoverageMeta, FileCoverage, FileRecord, InlineEntry, RunSummary, TestRecord } from '../core/resultModel';
 import type { ParsedFile } from '../core/testModel';
+import { CoverageHistory, mergeHits, type RecordedHit, type SourceSelection } from './coverageHistory';
 
 export interface ResultStoreOptions {
   /** Coalescing window for `onDidChange` in ms (default 16). */
@@ -74,10 +75,14 @@ interface PendingRun {
   seenTests: Set<string>;
   /** De-selected tests of a narrowed run whose previous result was kept. */
   keptTests: Set<string>;
-  /** Per-test coverage received before the test's result (testKey -> source -> stmt ids). */
-  perTest: Map<string, Map<string, number[]>>;
+  /** Revision-bound coverage chunks received in this run (kept for late chunks/retries). */
+  perTest: Map<string, RecordedHit[]>;
+  coverageReported: Set<string>;
+  sharedHits: RecordedHit[];
+  sharedComplete: boolean;
+  sequence: number;
   /** File-level coverage (source -> hits). */
-  fileHits: Map<string, { hash: string; stmts: Set<number>; arms: Set<string> }>;
+  fileHits: RecordedHit[];
   loaded: Set<string>;
   /** Inline entries waiting for their test's result (testKey -> entries) or for `fileResult` (no key). */
   entriesByTest: Map<string, Array<{ file: string; line: number; entry: InlineEntry }>>;
@@ -98,6 +103,10 @@ export class ResultStore {
   private readonly files = new Map<string, FileRecord>();
   private readonly parsedFiles = new Map<string, ParsedFile>();
   private readonly coverage = new Map<string, FileCoverage>();
+  private readonly dirtyCoverage = new Set<string>();
+  private readonly history = new CoverageHistory();
+  private runSequence = 0;
+  private readonly receivedHashes = new Map<string, string>();
   private readonly loadedByMap = new Map<string, Set<string>>();
   private readonly execByMap = new Map<string, Set<string>>();
   /** testKey -> sources holding `stmtHitBy` entries for it. */
@@ -232,6 +241,7 @@ export class ResultStore {
 
   /** Forgets everything about a test file (results, coverage contributions, inline entries). */
   clearFile(path: string): void {
+    const sources = this.coveredSourcesOf(path);
     const file = this.files.get(path);
     if (file) for (const key of [...file.testKeys]) this.removeTest(key);
     this.removeFileLevelContributions(path);
@@ -245,12 +255,24 @@ export class ResultStore {
     this.dataStarts.delete(path);
     this.preQueueStatus.delete(path);
     for (const [k, p] of this.pending) if (p.path === path) this.pending.delete(k);
+    this.history.forgetFile(path);
+    for (const src of sources) { this.projectCoverage(src); this.touch(src); }
+    this.pruneCoverage();
     this.touch(path);
   }
 
   /** Forgets every file of a project. */
   clearProject(projectId: string): void {
-    for (const [path, file] of [...this.files]) if (file.projectId === projectId) this.clearFile(path);
+    const sources = new Set<string>();
+    for (const [path, file] of [...this.files]) if (file.projectId === projectId) {
+      for (const src of this.coveredSourcesOf(path)) sources.add(src);
+      this.clearFile(path);
+    }
+    for (const src of sources) if (!this.execByMap.has(src) && !this.loadedByMap.has(src)
+      && ![...this.fileSources.values()].some(paths => paths.has(src))) {
+      this.coverage.delete(src); this.dirtyCoverage.delete(src);
+    }
+    for (const key of this.receivedHashes.keys()) if (key.startsWith(`${projectId}\0`)) this.receivedHashes.delete(key);
   }
 
   /** Marks a run as aborted (worker killed); pending data of the run is discarded. */
@@ -283,10 +305,7 @@ export class ResultStore {
       case 'testResult': return this.onTestResult(msg, projectId);
       case 'testCoverage': return this.onTestCoverage(msg, projectId);
       case 'fileLoad': return this.onFileLoad(msg, projectId);
-      case 'coverageMeta': return this.setCoverageMeta(msg.path, {
-        hash: msg.hash, stmtStartLine: msg.stmtStartLine, stmtEndLine: msg.stmtEndLine,
-        fnDeclLine: msg.fnDeclLine, fnEndLine: msg.fnEndLine, branchArms: msg.branchArms, remapped: msg.remapped,
-      });
+      case 'coverageMeta': return this.setCoverageMeta(msg.path, msg, projectId);
       case 'fileCoverage': return this.onFileCoverage(msg, projectId);
       case 'console': return this.onConsole(msg, projectId);
       case 'value': return this.onValue(msg, projectId);
@@ -303,7 +322,13 @@ export class ResultStore {
   fileRecord(path: string): FileRecord | undefined { return this.files.get(path); }
   test(testKey: string): TestRecord | undefined { return this.tests.get(testKey); }
   parsed(path: string): ParsedFile | undefined { return this.parsedFiles.get(path); }
-  coverageFor(path: string): FileCoverage | undefined { return this.coverage.get(path); }
+  coverageFor(path: string): FileCoverage | undefined {
+    const cov = this.coverage.get(path);
+    // UI reads are coalesced; do not rebuild every source's aggregate for every streamed test.
+    if (cov && this.dirtyCoverage.delete(path)) this.history.project(path, cov);
+    return cov;
+  }
+  sourceSelection(path: string, text: string): SourceSelection { return this.history.select(path, text); }
   staleInfo(path: string): StaleInfo | undefined { return this.staleMap.get(path); }
   lastRun(path: string): LastRunInfo | undefined { return this.lastRuns.get(path); }
   /**
@@ -457,8 +482,8 @@ export class ResultStore {
     p.seenTests.add(key);
     // Commit per-test data that arrived before the result.
     const cov = p.perTest.get(key);
-    p.perTest.delete(key);
-    const touched = this.replaceTestCoverage(key, cov);
+    const touched = isInactiveStatus(m.status) || cov !== undefined
+      ? this.replaceTestCoverage(key, cov, p.sequence) : new Set<string>();
     for (const s of touched) this.touch(s);
     const entries = p.entriesByTest.get(key);
     p.entriesByTest.delete(key);
@@ -468,27 +493,20 @@ export class ResultStore {
 
   private onTestCoverage(m: TestCoverageMsg, projectId: string): void {
     const p = this.ensurePending(m.runId, m.path, projectId);
-    const bySource = new Map<string, number[]>();
-    for (const f of m.files) {
-      const prev = bySource.get(f.path);
-      bySource.set(f.path, prev ? prev.concat(f.stmts) : f.stmts.slice());
+    p.coverageReported.add(m.testKey);
+    const bound = this.history.bind(projectId, m.files.map(f => ({ ...f,
+      hash: f.hash ?? this.receivedHashes.get(`${projectId}\0${f.path}`),
+    })));
+    if (p.keptTests.has(m.testKey)) return;
+    if (p.seenTests.has(m.testKey)) {
+      // First message of a run replaces the old test; later chunks merge only this run's data.
+      const current = p.perTest.get(m.testKey) ?? [];
+      const hits = mergeHits(current, bound);
+      p.perTest.set(m.testKey, hits);
+      for (const src of this.replaceTestCoverage(m.testKey, hits, p.sequence)) this.touch(src);
+    } else {
+      p.perTest.set(m.testKey, mergeHits(p.perTest.get(m.testKey) ?? [], bound));
     }
-    if (p.seenTests.has(m.testKey) && !p.keptTests.has(m.testKey)) {
-      // Result already arrived: merge with what this run already committed for the test.
-      const current = this.perTestHits(m.testKey);
-      for (const [src, stmts] of bySource) {
-        const prev = current.get(src);
-        current.set(src, prev ? prev.concat(stmts) : stmts);
-      }
-      for (const s of this.replaceTestCoverage(m.testKey, current)) this.touch(s);
-      return;
-    }
-    const stash = p.perTest.get(m.testKey) ?? new Map<string, number[]>();
-    for (const [src, stmts] of bySource) {
-      const prev = stash.get(src);
-      stash.set(src, prev ? prev.concat(stmts) : stmts);
-    }
-    p.perTest.set(m.testKey, stash);
   }
 
   /**
@@ -512,28 +530,25 @@ export class ResultStore {
     }
     const p = this.ensurePending(m.runId, m.path, projectId);
     for (const f of m.files) p.loaded.add(f);
+    if (m.shared) p.sharedHits = mergeHits(p.sharedHits, this.history.bind(projectId, m.shared));
+    if (m.complete !== undefined) p.sharedComplete = m.complete;
   }
 
   private onFileCoverage(m: FileCoverageMsg, projectId: string): void {
+    const hits = this.history.bind(projectId, m.files.map(f => ({ path: f.path, hash: f.hash, revision: f.revision, stmts: f.hitStmts })))
+      .map((h, i) => ({ ...h, arms: m.files[i].hitBranchArms.slice() }));
     if (this.isCommitted(m.runId, m.path)) {
-      for (const f of m.files) {
-        const cov = this.ensureCoverage(f.path);
-        for (const s of f.hitStmts) addTo(cov.stmtHitByFile, s, m.path);
-        for (let i = 0; i + 1 < f.hitBranchArms.length; i += 2) addTo(cov.branchArmHitByFile, `${f.hitBranchArms[i]}:${f.hitBranchArms[i + 1]}`, m.path);
-        addTo(this.fileSources, m.path, f.path);
-        this.clearSatisfiedStale(f.path, this.lastRuns.get(m.path)!.startedAt);
-        this.touch(f.path);
+      this.history.commitFile(m.path, hits, [], false, true, this.runSequence);
+      for (const h of hits) {
+        addTo(this.fileSources, m.path, h.path);
+        this.projectCoverage(h.path);
+        this.clearSatisfiedStale(h.path, this.lastRuns.get(m.path)!.startedAt);
+        this.touch(h.path);
       }
       return;
     }
     const p = this.ensurePending(m.runId, m.path, projectId);
-    for (const f of m.files) {
-      let bucket = p.fileHits.get(f.path);
-      if (!bucket) p.fileHits.set(f.path, (bucket = { hash: f.hash, stmts: new Set(), arms: new Set() }));
-      bucket.hash = f.hash;
-      for (const s of f.hitStmts) bucket.stmts.add(s);
-      for (let i = 0; i + 1 < f.hitBranchArms.length; i += 2) bucket.arms.add(`${f.hitBranchArms[i]}:${f.hitBranchArms[i + 1]}`);
-    }
+    p.fileHits = mergeHits(p.fileHits, hits);
   }
 
   private onConsole(m: ConsoleMsg, projectId: string): void {
@@ -577,19 +592,17 @@ export class ResultStore {
     file.lastRunId = m.runId;
     file.updatedAt = this.now();
 
-    // File-level coverage: replace this test file's previous contributions. A narrowed run only
-    // executed the selected tests, so its union is merged into (not substituted for) the previous one.
-    if (!p.filtered) for (const s of this.removeFileLevelContributions(m.path)) touched.add(s);
-    for (const [src, hits] of p.fileHits) {
-      const cov = this.ensureCoverage(src);
-      for (const s of hits.stmts) addTo(cov.stmtHitByFile, s, m.path);
-      for (const a of hits.arms) addTo(cov.branchArmHitByFile, a, m.path);
-      addTo(this.fileSources, m.path, src);
-      touched.add(src);
-    }
+    // Failed loads cannot establish that old dependencies disappeared.
+    const failedLoad = !!m.testExecError || m.status === 'notMatched' || m.status === 'errored';
+    const preserve = p.filtered || failedLoad;
+    if (!preserve) for (const src of this.removeFileLevelContributions(m.path)) touched.add(src);
+    for (const h of p.fileHits) { addTo(this.fileSources, m.path, h.path); touched.add(h.path); }
+    const complete = p.sharedComplete && !failedLoad && [...p.seenTests].every(key =>
+      p.keptTests.has(key) || isInactiveStatus(this.tests.get(key)?.status ?? 'pending') || p.coverageReported.has(key));
+    this.history.commitFile(m.path, p.fileHits, p.sharedHits, complete, preserve, p.sequence);
 
     // Loaded-by: replace (merge for narrowed runs, same reasoning as above).
-    if (!p.filtered) for (const s of this.removeLoadedBy(m.path)) touched.add(s);
+    if (!preserve) for (const s of this.removeLoadedBy(m.path)) touched.add(s);
     for (const src of p.loaded) {
       addTo(this.loadedByMap, src, m.path);
       addTo(this.fileLoads, m.path, src);
@@ -597,11 +610,11 @@ export class ResultStore {
     }
 
     // Per-test coverage for tests that never reported (defensive).
-    for (const [key, cov] of p.perTest) for (const s of this.replaceTestCoverage(key, cov)) touched.add(s);
+    for (const [key, cov] of p.perTest) if (!failedLoad || p.seenTests.has(key)) for (const s of this.replaceTestCoverage(key, cov, p.sequence)) touched.add(s);
     p.perTest.clear();
 
     // Unfiltered run: tests not reported any more were deleted from the file.
-    if (!p.filtered) {
+    if (!preserve) {
       for (const key of [...file.testKeys]) {
         if (!p.seenTests.has(key)) for (const s of this.removeTest(key)) touched.add(s);
       }
@@ -619,7 +632,7 @@ export class ResultStore {
     }
 
     // Stale markers set before this run started are now satisfied.
-    for (const path of touched) this.clearSatisfiedStale(path, p.startedAt);
+    for (const path of touched) { this.projectCoverage(path); this.clearSatisfiedStale(path, p.startedAt); }
     file.stale = this.staleMap.has(m.path);
     for (const key of p.seenTests) {
       const t = this.tests.get(key);
@@ -652,6 +665,7 @@ export class ResultStore {
     for (const [k, p] of [...this.pending]) {
       if (p.runId !== runId) continue;
       if (interrupted) {
+        this.history.invalidate(p.path);
         const file = this.files.get(p.path);
         if (file && file.status === 'running') file.status = p.prevStatus === 'running' || p.prevStatus === 'queued' ? 'unknown' : p.prevStatus;
         this.startedTests.delete(p.path);
@@ -667,61 +681,43 @@ export class ResultStore {
       }
     }
     this.runRegistrations.delete(runId);
+    this.pruneCoverage();
   }
 
   // ------------------------------------------------------------------------------------------
   // Internals: coverage
   // ------------------------------------------------------------------------------------------
 
-  private setCoverageMeta(path: string, meta: CoverageMeta): void {
+  private setCoverageMeta(path: string, meta: CoverageMeta, projectId: string): void {
+    this.history.addMeta(projectId, path, meta);
+    this.receivedHashes.set(`${projectId}\0${path}`, meta.hash);
     const cov = this.ensureCoverage(path);
-    if (cov.meta && cov.meta.hash !== meta.hash) {
-      // Statement ids changed with the file: previous hits no longer line up.
-      for (const key of [...cov.stmtHitBy.values()].flatMap(s => [...s])) this.testSources.get(key)?.delete(path);
-      for (const tf of [...cov.stmtHitByFile.values()].flatMap(s => [...s])) this.fileSources.get(tf)?.delete(path);
-      cov.stmtHitBy.clear();
-      cov.stmtHitByFile.clear();
-      cov.branchArmHitByFile.clear();
-      this.execByMap.delete(path);
-    }
-    cov.meta = meta;
+    // Metadata arrival is not a run commit. In particular, late workers must not roll back the UI.
+    if (!cov.meta) cov.meta = meta;
     this.touch(path);
   }
 
-  /** Current per-test hits of a test (source -> stmt ids), reconstructed from the hit maps. */
-  private perTestHits(testKey: string): Map<string, number[]> {
-    const out = new Map<string, number[]>();
-    for (const src of this.testSources.get(testKey) ?? []) {
-      const cov = this.coverage.get(src);
-      if (!cov) continue;
-      const ids: number[] = [];
-      for (const [s, keys] of cov.stmtHitBy) if (keys.has(testKey)) ids.push(s);
-      out.set(src, ids);
-    }
-    return out;
+  private projectCoverage(src: string): void {
+    if (this.coverage.has(src)) this.dirtyCoverage.add(src);
   }
 
-  /** Replaces a test's statement hits; returns the touched source paths. */
-  private replaceTestCoverage(testKey: string, hits: Map<string, number[]> | undefined): Set<string> {
-    const touched = new Set<string>();
+  private pruneCoverage(): void {
+    if (this.pending.size || this.runRegistrations.size) return;
+    this.history.prune([]);
+  }
+
+  /** Replaces one test's revision-bound hits; other tests retain their original coordinate systems. */
+  private replaceTestCoverage(testKey: string, hits: RecordedHit[] | undefined, sequence = 0): Set<string> {
+    const touched = this.history.replaceTest(testKey, hits ?? [], sequence);
     for (const src of this.testSources.get(testKey) ?? []) {
-      const cov = this.coverage.get(src);
-      if (cov) for (const [s, keys] of cov.stmtHitBy) if (keys.delete(testKey) && keys.size === 0) cov.stmtHitBy.delete(s);
-      const ex = this.execByMap.get(src);
-      if (ex && ex.delete(testKey) && ex.size === 0) this.execByMap.delete(src);
-      touched.add(src);
+      const keys = this.execByMap.get(src);
+      if (keys && keys.delete(testKey) && !keys.size) this.execByMap.delete(src);
     }
     this.testSources.delete(testKey);
-    if (hits) {
-      for (const [src, stmts] of hits) {
-        if (stmts.length === 0) continue;
-        const cov = this.ensureCoverage(src);
-        for (const s of stmts) addTo(cov.stmtHitBy, s, testKey);
-        addTo(this.execByMap, src, testKey);
-        addTo(this.testSources, testKey, src);
-        touched.add(src);
-      }
+    for (const h of hits ?? []) if (h.stmts.length || h.fns?.length) {
+      addTo(this.testSources, testKey, h.path); addTo(this.execByMap, h.path, testKey);
     }
+    for (const src of touched) { this.ensureCoverage(src); this.projectCoverage(src); }
     return touched;
   }
 
@@ -844,7 +840,8 @@ export class ResultStore {
         filtered: !!filterNames && filterNames.length > 0,
         names: new Set(filterNames ?? []),
         prevStatus: file?.status ?? 'unknown',
-        seenTests: new Set(), keptTests: new Set(), perTest: new Map(), fileHits: new Map(), loaded: new Set(),
+        seenTests: new Set(), keptTests: new Set(), perTest: new Map(), fileHits: [], loaded: new Set(),
+        coverageReported: new Set(), sharedHits: [], sharedComplete: false, sequence: ++this.runSequence,
         entriesByTest: new Map(), untaggedEntries: [],
       };
       this.pending.set(key, p);

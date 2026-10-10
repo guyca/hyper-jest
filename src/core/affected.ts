@@ -16,6 +16,7 @@
 import { parseTestKey, type RunTestSelection } from './protocol';
 import type { ChangeAnalysis } from './changeAnalyzer';
 import { touchedOldLines, type LineChange } from './textDiff';
+import type { SourceSelection } from '../results/coverageHistory';
 
 // ---------------------------------------------------------------------------------------------
 // Types
@@ -46,6 +47,8 @@ export interface AffectedSettings {
 }
 
 export interface AffectedInput {
+  /** Source edits evaluated against each test's own immutable coverage revision. */
+  sourceSelection?: SourceSelection;
   /** Absolute (real) path of the edited file. */
   changedFile: string;
   /** Hunks in the current text relative to the text the runtime data was recorded for; null = unknown extent. */
@@ -159,7 +162,9 @@ function selectForSourceFile(input: AffectedInput): AffectedResult {
   // A: tests that executed the file (optionally narrowed to the edited functions).
   const executed = input.execBy.get(file);
   if (executed && executed.size > 0) {
-    const narrowed = narrowByFunctions(executed, input.changedLines, input.coverage);
+    const narrowed = input.sourceSelection
+      ? { keys: new Set([...executed].filter(key => input.sourceSelection!.tests.has(key))), narrowed: [...executed].some(key => !input.sourceSelection!.tests.has(key)) }
+      : narrowByFunctions(executed, input.changedLines, input.coverage);
     counts.narrowed = narrowed.narrowed;
     const byFile = groupKeysByFile(narrowed.keys);
     for (const [testFile, keys] of byFile) {
@@ -172,9 +177,16 @@ function selectForSourceFile(input: AffectedInput): AffectedResult {
   if (input.settings.trackFileLoading) {
     for (const loader of input.loadedBy.get(file) ?? []) {
       if (input.testFiles.size > 0 && !input.testFiles.has(loader)) continue;
+      if (input.sourceSelection?.trackedFiles.has(loader) && !input.sourceSelection.wholeFiles.has(loader)) continue;
       acc.addWhole(loader, 2);
       counts.loadedBy++;
     }
+  }
+
+  // A function executed only in a shared hook may have no per-test execution or initial load edge.
+  if (input.settings.trackFileLoading) for (const loader of input.sourceSelection?.wholeFiles ?? []) {
+    if (input.testFiles.size > 0 && !input.testFiles.has(loader)) continue;
+    acc.addWhole(loader, 2);
   }
 
   // C: static importers (closure) that have no authoritative runtime data.

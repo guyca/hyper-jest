@@ -55,11 +55,13 @@ describe('LineShift', () => {
 
 describe('LineShiftTracker + computeLineView', () => {
   it('keeps coverage states on their lines after lines are inserted above them', () => {
-    const store = new ResultStore();
+    let now = 100;
+    const store = new ResultStore({ now: () => now });
     applyFullRun(store, 'r1');
     const before = computeLineView(store, SRC);
     expect(before.lines.get(L(2))?.state).toBe('covered');
-    const tracker = new LineShiftTracker(store);
+    const tracker = new LineShiftTracker(store, () => now);
+    now = 200;
     store.markStale(SRC);
     tracker.noteEdit(SRC, [edit(0, 0, 0, 0, '// a\n// b\n')]);
     const shift = tracker.get(SRC)!;
