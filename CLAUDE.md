@@ -13,11 +13,10 @@ feature research and parity mapping.
   extension host.
 - **Never load Jest in the extension host.** Jest, Babel, ts-jest and project configs are loaded only inside
   worker processes (`src/worker/*`) or spawned CLI processes. Loading a config in the host would run
-  side effects (shono's `jestConfig.js` patches `node_modules`) and block the UI.
+  side effects (such as patching `node_modules`) and block the UI.
 - **Resolve Jest by chain from the project's `jest` package** (`jest -> jest-cli -> @jest/core -> jest-config /
   jest-runtime / jest-runner / ...`). Never use `node_modules/.bin/jest` and never resolve Jest packages from
-  the repo root: hoisting mixes versions (mobile-modules root `.bin/jest` is 30.2 while the effective chain
-  is 29.7; mobile-apps-engine hoists `jest-config` 29.7 while `jest` is 30.4.2).
+  the repo root: hoisting can mix incompatible versions of Jest and its internal packages.
 - **No `vscode` import under `src/core/` or `src/worker/`.** Those directories are pure Node and unit-tested
   with Jest (`tests/unit`). Only `src/*.ts` and `src/discovery/*`, `src/results/*` UI files may import `vscode`.
 - **Never bundle Jest/Babel into the worker bundles.** `esbuild.mjs` bundles only HyperJest code (plus
@@ -27,20 +26,21 @@ feature research and parity mapping.
 
 ## Toolchain
 
-- Node ≥ 22 (this machine: `fnm use 24.19.0`), Yarn 4.18.0 pinned in `package.json` via Corepack.
+- Node ≥ 22, Yarn 4.18.0 pinned in `package.json` via Corepack.
   Dependencies are exact-pinned in `package.json`; commit `yarn.lock` for reproducible installs.
-- `.yarnrc.yml`: `nodeLinker: node-modules`, `npmRegistryServer: https://npm.dev.wixpress.com/`
-  (the public registry is blocked here), `defaultSemverRangePrefix: ""`, `enableScripts: false`,
+- `.yarnrc.yml`: `nodeLinker: node-modules`, `npmRegistryServer: https://registry.npmjs.org`,
+  `defaultSemverRangePrefix: ""`, `enableScripts: false`,
   `enableTelemetry: false`. esbuild's binary comes from the optional `@esbuild/darwin-arm64` package;
   keytar's network postinstall never runs.
-- Installing/building **may** use the Wix registry. Using the installed `.vsix` never does.
+- Fresh dependency installs use the public npm registry. Using the installed `.vsix` requires no network.
 
 ## Commands
 
 ```bash
 corepack enable             # one-time: enable the Yarn shim
-COREPACK_NPM_REGISTRY=https://npm.dev.wixpress.com corepack install # download the pinned Yarn version
-yarn install --immutable    # install exactly yarn.lock — needs the Wix registry on a fresh cache
+corepack install            # download the pinned Yarn version
+yarn install --immutable    # install exactly yarn.lock; also sets up Husky's pre-commit hook
+yarn sanitize:lockfile      # strip registry-specific tarball URLs (also runs on staged lockfile commits)
 yarn build                  # type-check (host, worker and test tsconfigs) + production bundles into dist/
 yarn build:dev              # fast dev bundles with source maps
 yarn watch                  # rebuild on change (used by .vscode/launch.json "Run HyperJest (dev host)")
@@ -100,6 +100,8 @@ Host forks `dist/worker/hyperjestWorker.cjs` with the project's node, `cwd = pac
 
 1. Online: `yarn add --dev <pkg>@<exact>` (new versions are saved without a range prefix).
 2. Run `yarn build && yarn test`. 3. Commit `package.json` + `yarn.lock`.
+The pre-commit hook sanitizes staged lockfile changes; run `yarn sanitize:lockfile` manually before
+verifying an immutable install. CI rejects lockfiles containing registry-specific `__archiveUrl` entries.
 If editing dependency entries by hand, run `yarn install` to update the lockfile before verifying
 with `yarn install --immutable`. For `@types/vscode`, bump `engines.vscode` to the same major.minor.
 Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist/worker/*.cjs` (expect 0).
@@ -118,7 +120,7 @@ Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist
   node scripts/worker-driver.mjs init --pkg <packageDir> [-c <config>] [--node <node>] [--env K=V]
   node scripts/worker-driver.mjs run <test file> --pkg <packageDir> --repeat 2
   node scripts/worker-driver.mjs show-config --pkg <packageDir>
-  node scripts/discovery-report.mjs --repo /Users/guyc/workspace1/<repo> --show-warnings
+  node scripts/discovery-report.mjs --repo <repoDir> --show-warnings
   ```
 - **Nothing runs for a package** → Doctor: `unavailable` means `jest` does not resolve from the package (run the
   repo's `yarn install`); `notJest` means the test script is not Jest (node --test, mocha, detox); `unsupported`
@@ -155,11 +157,12 @@ Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist
 
 1. `yarn build && yarn test && yarn test:it` green.
 2. `yarn package`; `code --install-extension hyperjest.vsix --force`; reload.
-3. With Wi-Fi off: open `mobile-apps-relops-automations/.../tests/unit/jsonlWriter.test.ts` → green squares in the
-   spec and in `src/**/jsonlWriter.ts`; break an `expect` → red line + Problems entry; `console.log` inline;
+3. With Wi-Fi off: open a test in a project with installed dependencies → green squares in the
+   test and source files; break an `expect` → red line + Problems entry; `console.log` inline;
    Debug Line Test hits a breakpoint; Update Test Snapshots writes `__snapshots__`.
-4. Same on `delay-of-game` (jest 30.5.2, `@jest-environment` docblocks), `mobile-apps-engine` (30.4.2, RN) and a
-   `mobile-modules` shono package. `branded-apps` shows `unavailable` with the yarn hint; `appium-tests` is ignored.
+4. Repeat with Jest 29 and 30, `@jest-environment` docblocks, a React Native project and a project with a
+   script-selected config. A project without installed Jest shows `unavailable` with an install hint;
+   non-Jest test scripts are ignored.
 5. `yarn check:no-network <extension host pid>` → no sockets from HyperJest or its workers.
 
 ## Release steps

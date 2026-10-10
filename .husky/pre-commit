@@ -1,0 +1,4 @@
+# Keep registry-specific tarball URLs out of the committed lockfile; see scripts/sanitize-lockfile.sh
+git diff --cached --name-only --diff-filter=AM | grep -qx 'yarn.lock' || exit 0
+sh scripts/sanitize-lockfile.sh
+git add yarn.lock
