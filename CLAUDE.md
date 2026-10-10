@@ -13,7 +13,7 @@ feature research and parity mapping.
   extension host.
 - **Never load Jest in the extension host.** Jest, Babel, ts-jest and project configs are loaded only inside
   worker processes (`src/worker/*`) or spawned CLI processes. Loading a config in the host would run
-  side effects (such as patching `node_modules`) and block the UI.
+  side effects and block the UI.
 - **Resolve Jest by chain from the project's `jest` package** (`jest -> jest-cli -> @jest/core -> jest-config /
   jest-runtime / jest-runner / ...`). Never use `node_modules/.bin/jest` and never resolve Jest packages from
   the repo root: hoisting can mix incompatible versions of Jest and its internal packages.
