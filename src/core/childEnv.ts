@@ -16,7 +16,7 @@ export const HOST_ONLY_VARS = ['ELECTRON_RUN_AS_NODE', 'VSCODE_INSPECTOR_OPTIONS
 export interface ChildEnvInput {
   base: NodeJS.ProcessEnv;
   nodePath: string;
-  /** Project-flavor env (e.g. shono) applied after sanitisation. */
+  /** Project configuration environment applied after sanitisation. */
   projectEnv?: Record<string, string>;
   /** User `hyperjest.env`, applied last. */
   userEnv?: Record<string, string>;

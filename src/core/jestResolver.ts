@@ -13,7 +13,7 @@ import * as path from 'path';
 import { FsView, PackageJsonLike, ancestors, nodeFs, normalizePath, readJson } from './paths';
 
 /**
- * Resolve `request` (a module id such as `jest/package.json` or `@wix/shono`) starting from each of
+ * Resolve `request` (a module id such as `jest/package.json` or `@example/test-tools`) starting from each of
  * `fromDirs` in order. Returns the absolute (real) path of the resolved file, or undefined.
  */
 export type ResolveFn = (request: string, fromDirs: string[]) => string | undefined;
@@ -125,7 +125,7 @@ export function isSupportedJestVersion(version: string): boolean {
 }
 
 /**
- * Resolve the `jest` package from the first of `startDirs` that can see one (e.g. `[shonoTestjsDir, packageDir]`).
+ * Resolve the `jest` package from the first of `startDirs` that can see one (e.g. `[packageDir]`).
  * Never consults `node_modules/.bin`.
  */
 export function resolveJest(startDirs: string[], resolve: ResolveFn, fsv: FsView): JestResolution | undefined {

@@ -1,6 +1,6 @@
 /**
  * Wraps the project's Jest test environment class (jest-environment-node, jsdom, react-native,
- * shono's customNodeEnv, a `@jest-environment` docblock env: whatever `requireAndTranspileModule`
+ * a custom environment, a `@jest-environment` docblock env: whatever `requireAndTranspileModule`
  * returns) in a subclass that observes jest-circus events via `handleTestEvent`. The wrapper is
  * installed through the prototype seam in transformHooks.ts, so the ProjectConfig stays untouched
  * and the user's transform cache is reused byte-for-byte.

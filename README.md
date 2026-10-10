@@ -81,6 +81,17 @@ labels config-specific failures and values. Debugging an ambiguous editor test a
 use. Snapshot-writing runs for the same test file are serialized. Config edits and selection changes
 cancel obsolete work, recycle affected workers, and refresh results without reloading VS Code.
 
+### Custom project setup
+
+Jest must be installed where it resolves from the package being tested. HyperJest follows that Jest
+installation's dependency chain so hoisted packages from another Jest version are not mixed in.
+Custom test tools are not automatically interpreted. Supply their required Jest config, environment,
+Node arguments, and file patterns in `hyperjest.config.js` or the existing workspace settings.
+
+End-to-end exclusions default to `**/e2e/**` and `**/*.e2e.*`. Set
+`hyperjest.discovery.e2ePatterns` for additional directory conventions; configuration contents and
+third-party preset names do not determine these exclusions.
+
 ### Startup
 
 `hyperjest.smartStart` now defaults to `"always"`: after import and config selection, all eligible tests

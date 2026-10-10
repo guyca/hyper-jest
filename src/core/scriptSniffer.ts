@@ -14,18 +14,16 @@ import * as path from 'path';
 
 export type Runner =
   | 'jest'
-  | 'shono-testjs'
   | 'node-test'
   | 'mocha'
   | 'wdio'
-  | 'detox'
   | 'vitest'
   | 'playwright'
   | 'cypress'
   | 'other';
 
 /** Runners that are tests but not Jest (listed by Doctor as not-jest / e2e). */
-export const NON_JEST_TEST_RUNNERS: readonly Runner[] = ['node-test', 'mocha', 'wdio', 'detox', 'vitest', 'playwright', 'cypress'];
+export const NON_JEST_TEST_RUNNERS: readonly Runner[] = ['node-test', 'mocha', 'wdio', 'vitest', 'playwright', 'cypress'];
 
 export interface JestArgs {
   /** Raw value of `-c` / `--config` (relative to the package dir unless absolute). */
@@ -39,12 +37,6 @@ export interface JestArgs {
   flags: Record<string, string | boolean | string[]>;
   /** Raw positional arguments (before merging into testPathPatterns). */
   positional: string[];
-}
-
-export interface ShonoArgs {
-  /** Optional positional test file / folder passed to `shono testjs`. */
-  fileName?: string;
-  flags: string[];
 }
 
 export interface CommandInfo {
@@ -62,7 +54,6 @@ export interface CommandInfo {
   /** Wrappers peeled before the bin (e.g. `['yarn', 'cross-env']`). */
   wrappers: string[];
   jest?: JestArgs;
-  shono?: ShonoArgs;
 }
 
 export interface ScriptInfo {
@@ -274,11 +265,6 @@ export function nodeOptionsToArgs(nodeOptions: string): string[] {
   return nodeOptions.split(/\s+/).map(s => s.replace(/^["']|["']$/g, '')).filter(Boolean);
 }
 
-/** True for `<something>/shono-testjs/dist/src/jestConfig.js` (the inlined shono command form). */
-export function isShonoConfigPath(p: string | undefined): boolean {
-  return !!p && /shono-testjs[\\/]dist[\\/]src[\\/]jestConfig\.(js|cjs)$/.test(p);
-}
-
 // ---------------------------------------------------------------------------------------------
 // Command classification
 // ---------------------------------------------------------------------------------------------
@@ -437,37 +423,13 @@ function classifyRest(rest: string[]): { runner: Runner; bin: string; args: stri
     return { runner: n.runner, bin: n.bin, args: n.args, env };
   }
   if (JEST_BIN.test(bin)) return { runner: 'jest', bin, args: rest.slice(1) };
-  if (stem === 'shono' || stem === 'shono-lib') {
-    const sub = rest[1];
-    if (sub === 'testjs') return { runner: 'shono-testjs', bin: `${stem} testjs`, args: rest.slice(2) };
-    return { runner: 'other', bin: `${stem} ${sub ?? ''}`.trim(), args: rest.slice(2) };
-  }
-  if (stem === 'shono-testjs') return { runner: 'shono-testjs', bin: stem, args: rest.slice(1) };
   if (stem === 'mocha' || stem === '_mocha') return { runner: 'mocha', bin, args: rest.slice(1) };
   if (stem === 'wdio') return { runner: 'wdio', bin, args: rest.slice(1) };
-  if (stem === 'detox') return { runner: 'detox', bin, args: rest.slice(1) };
   if (stem === 'vitest') return { runner: 'vitest', bin, args: rest.slice(1) };
   if (stem === 'playwright') return { runner: 'playwright', bin, args: rest.slice(1) };
   if (stem === 'cypress') return { runner: 'cypress', bin, args: rest.slice(1) };
   if ((stem === 'tsx' || stem === 'ts-node') && rest.includes('--test')) return { runner: 'node-test', bin: `${stem} --test`, args: rest.slice(1) };
   return { runner: 'other', bin, args: rest.slice(1) };
-}
-
-function parseShonoArgs(args: string[]): ShonoArgs {
-  const flags: string[] = [];
-  let fileName: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '--') continue;
-    if (a.startsWith('-')) {
-      flags.push(a);
-      if (a === '-e' || a === '--excluded-modules') i++;
-      continue;
-    }
-    if (fileName === undefined) fileName = a;
-    else flags.push(a);
-  }
-  return { fileName, flags };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -478,8 +440,8 @@ const MAX_SCRIPT_REF_DEPTH = 4;
 
 /**
  * Sniff every script of a package. Script references (`yarn run x`, `npm run x`, `yarn x`) are
- * expanded inline (depth-limited, cycle-safe) so `test: "yarn run shono:test"` yields a
- * `shono-testjs` command attributed to `shono:test` via `test`.
+ * expanded inline (depth-limited, cycle-safe) so `test: "yarn run test:unit"` yields a
+ * `jest` command attributed to `test:unit` via `test`.
  */
 export function sniffScripts(scripts: Record<string, string> | undefined): ScriptInfo[] {
   if (!scripts) return [];
@@ -533,7 +495,6 @@ function sniffCommandLine(
       wrappers: peeled.wrappers,
     };
     if (cls.runner === 'jest') info.jest = parseJestArgs(cls.args);
-    if (cls.runner === 'shono-testjs') info.shono = parseShonoArgs(cls.args);
     out.push(info);
   }
   return out;
@@ -549,9 +510,9 @@ export function isTestLikeScriptName(name: string): boolean {
   return /(^|[:._-])(pre|post)?(test|tests|testjs|spec|specs|jest|unit|integration|it|e2e)([:._-]|$)/i.test(name) || /^test/i.test(name);
 }
 
-/** True when the script name signals end-to-end tests (`test:e2e`, `e2e:ios`, `detox`). */
+/** True when the script name signals end-to-end tests (`test:e2e`, `e2e:ios`). */
 export function isE2eScriptName(name: string): boolean {
-  return /(^|[:._-])(e2e|detox|appium|cypress|playwright)([:._-]|$)/i.test(name);
+  return /(^|[:._-])(e2e|appium|cypress|playwright)([:._-]|$)/i.test(name);
 }
 
 /**

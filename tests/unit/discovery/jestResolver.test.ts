@@ -12,20 +12,20 @@ const fs = createMemFs(
     '/repo/node_modules/.bin/jest': '#!/bin/sh\nexec node ../jest-cli/bin/jest.js',
     '/repo/node_modules/@jest/core/package.json': pkgJson({ name: '@jest/core', version: '29.7.0' }),
     '/repo/node_modules/jest-config/package.json': pkgJson({ name: 'jest-config', version: '29.7.0' }),
-    '/repo/node_modules/@wix/wix-one-app-engine/package.json': pkgJson({ name: '@wix/wix-one-app-engine', main: './main.js' }),
-    '/repo/node_modules/@wix/wix-one-app-engine/main.js': '',
+    '/repo/node_modules/@example/test-tools/package.json': pkgJson({ name: '@example/test-tools', main: './main.js' }),
+    '/repo/node_modules/@example/test-tools/main.js': '',
     '/repo/packages/a/package.json': pkgJson({ name: 'a' }),
     '/repo/packages/b/package.json': pkgJson({ name: 'b' }),
     '/repo/packages/b/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '30.5.2' }),
-    '/repo/packages/lib/package.json': pkgJson({ name: '@wix/lib', version: '1.0.0' }),
+    '/repo/packages/lib/package.json': pkgJson({ name: '@example/lib', version: '1.0.0' }),
   },
-  { symlinks: { '/repo/node_modules/@wix/lib': '/repo/packages/lib' } },
+  { symlinks: { '/repo/node_modules/@example/lib': '/repo/packages/lib' } },
 );
 const resolve = createFsResolveFn(fs);
 
 describe('jestResolver', () => {
   it('splits requests', () => {
-    expect(splitRequest('@wix/shono/package.json')).toEqual({ name: '@wix/shono', sub: 'package.json' });
+    expect(splitRequest('@example/toolkit/package.json')).toEqual({ name: '@example/toolkit', sub: 'package.json' });
     expect(splitRequest('jest')).toEqual({ name: 'jest', sub: '' });
     expect(splitRequest('jest/bin/jest.js')).toEqual({ name: 'jest', sub: 'bin/jest.js' });
   });
@@ -50,8 +50,8 @@ describe('jestResolver', () => {
   });
 
   it('resolves package mains and symlinked workspace packages', () => {
-    expect(resolve('@wix/wix-one-app-engine', ['/repo/packages/a'])).toBe('/repo/node_modules/@wix/wix-one-app-engine/main.js');
-    expect(resolvePackage('@wix/lib', ['/repo/packages/a'], resolve, fs)).toMatchObject({ pkgDir: '/repo/packages/lib', version: '1.0.0' });
+    expect(resolve('@example/test-tools', ['/repo/packages/a'])).toBe('/repo/node_modules/@example/test-tools/main.js');
+    expect(resolvePackage('@example/lib', ['/repo/packages/a'], resolve, fs)).toMatchObject({ pkgDir: '/repo/packages/lib', version: '1.0.0' });
     expect(resolve('nope/package.json', ['/repo/packages/a'])).toBeUndefined();
   });
 

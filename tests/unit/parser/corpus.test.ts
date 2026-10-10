@@ -1,16 +1,27 @@
-/**
- * Smoke test over real spec files from the sibling monorepos (read-only). Skipped when the repos
- * are not present, so CI elsewhere is unaffected. Asserts: zero parse errors and sane throughput.
- */
+/** Optional read-only parser validation against directories explicitly supplied by the caller. */
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseTestFile } from '../../../src/core/testParser';
 
-const CORPUS_ROOTS = [
-  '/Users/guyc/workspace1/mobile-modules/packages',
-  '/Users/guyc/workspace1/mobile-apps-relops-automations/packages',
-  '/Users/guyc/workspace1/delay-of-game/packages',
-];
+function corpusRoots(): string[] {
+  const raw = process.env.HYPERJEST_CORPUS_ROOTS;
+  if (raw === undefined) return [];
+  let roots: unknown;
+  try { roots = JSON.parse(raw); } catch {
+    throw new Error('HYPERJEST_CORPUS_ROOTS must be a JSON array of directory paths');
+  }
+  if (!Array.isArray(roots) || !roots.every(root => typeof root === 'string' && root.trim().length > 0)) {
+    throw new Error('HYPERJEST_CORPUS_ROOTS must be a JSON array of non-empty directory paths');
+  }
+  return [...new Set((roots as string[]).map(root => {
+    const dir = path.resolve(root);
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      throw new Error(`HYPERJEST_CORPUS_ROOTS directory does not exist: ${dir}`);
+    }
+    return dir;
+  }))];
+}
+
 const SPEC_RE = /\.(spec|test)(\.legacy)?\.[jt]sx?$/;
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage']);
 
@@ -27,10 +38,10 @@ function collect(dir: string, out: string[], budget: { left: number }): void {
   }
 }
 
-const available = CORPUS_ROOTS.filter(r => fs.existsSync(r));
+const available = corpusRoots();
 const maybe = available.length > 0 ? describe : describe.skip;
 
-maybe('parser corpus (workspace spec files, read-only)', () => {
+maybe('parser corpus (explicitly supplied spec files, read-only)', () => {
   it('parses every spec file without errors at a usable throughput', () => {
     const files: string[] = [];
     const budget = { left: Number(process.env.HYPERJEST_CORPUS_MAX ?? 5000) };

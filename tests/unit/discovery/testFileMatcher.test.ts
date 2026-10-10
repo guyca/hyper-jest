@@ -1,6 +1,6 @@
 import {
   JEST_CONFIG_EXT_ORDER, JEST_DEFAULTS, applyCliFilters, createMatcher, createMultiMatcher, escapeGlobCharacters, globsToMatcher, jestDefaultsFor, normalizeMatcherConfig,
-  replaceRootDirInPath, shonoProjectConfigs,
+  replaceRootDirInPath,
 } from '../../../src/core/testFileMatcher';
 
 describe('testFileMatcher', () => {
@@ -67,21 +67,15 @@ describe('testFileMatcher', () => {
     expect(globsToMatcher([])('/p/a.test.ts')).toBe(false);
   });
 
-  it('models shono-testjs projects', () => {
-    const multi = createMultiMatcher(shonoProjectConfigs('/p'));
-    const names = (f: string) => multi.projectsFor(f).map(m => m.config.displayName);
-    expect(names('/p/unitTests/a.spec.ts')).toEqual(['Unit Tests']);
-    expect(names('/p/src/deep/a.spec.tsx')).toEqual(['Unit Tests']);
-    expect(names('/p/headlessTests/h.spec.ts')).toEqual(['Headless Tests']);
-    expect(names('/p/src/a.test.legacy.js')).toEqual(['Legacy Unit Tests']);
-    expect(names('/p/src/__tests__/a.spec.legacy.tsx')).toEqual(['Legacy Unit Tests']);
-    expect(names('/p/detox/a.test.ts')).toEqual([]);
-    expect(names('/p/src/a.test.ts')).toEqual([]);
-    expect(names('/p/tests/a.spec.ts')).toEqual([]);
-    expect(names('/p/dist/unitTests/a.spec.ts')).toEqual([]);
-    expect(multi.isTestFile('/p/unitTests/a.spec.ts')).toBe(true);
-    const v136 = createMultiMatcher(shonoProjectConfigs('/p', { unitTestsFolders: ['unitTests', 'tests'] }));
-    expect(v136.projectsFor('/p/tests/a.spec.ts').map(m => m.config.displayName)).toEqual(['Unit Tests']);
+  it('matches multiple user-configured projects independently', () => {
+    const multi = createMultiMatcher([
+      { rootDir: '/p', displayName: 'unit', testMatch: ['<rootDir>/tests/unit/**/*.spec.ts'] },
+      { rootDir: '/p', displayName: 'integration', testMatch: ['<rootDir>/tests/integration/**/*.test.js'] },
+    ]);
+    expect(multi.projectsFor('/p/tests/unit/a.spec.ts').map(m => m.config.displayName)).toEqual(['unit']);
+    expect(multi.projectsFor('/p/tests/integration/a.test.js').map(m => m.config.displayName)).toEqual(['integration']);
+    expect(multi.isTestFile('/p/tests/unit/a.spec.ts')).toBe(true);
+    expect(multi.projectsFor('/p/src/a.test.ts')).toEqual([]);
   });
 
   it('applies CLI filters like setFromArgv', () => {

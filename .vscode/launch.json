@@ -5,7 +5,7 @@
       "name": "Run HyperJest (dev host)",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "/Users/guyc/workspace1/mobile-apps-relops-automations"],
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/tests/fixtures/sample-project"],
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "yarn: watch"
     }

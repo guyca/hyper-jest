@@ -9,7 +9,7 @@ const runtime = { nodePath: process.execPath, nodeArgs: [], env: {} };
 const wallaby = { autoDetect: true, testFramework: { configFile: './jest.config.js' }, files: ['src/**/*'], tests: ['tests/unit/**/*.test.ts'], env: { params: { env: 'TOKEN="two words" NODE_OPTIONS="--max_old_space_size=4096"', runner: '--no-warnings' } } };
 
 describe('Wallaby import and native scope', () => {
-  it('imports relops test scope, literal environment and Node arguments', () => {
+  it('imports workspace test scope, literal environment and Node arguments', () => {
     expect(importWallaby(wallaby)).toEqual({ jestConfig: './jest.config.js', files: ['src/**/*'], tests: ['tests/unit/**/*.test.ts'], env: { TOKEN: 'two words' }, nodeArgs: ['--max_old_space_size=4096', '--no-warnings'] });
     expect(importWallaby({ env: { params: { env: `NODE_OPTIONS='--require "/p/space here.js"'` } } }).nodeArgs).toEqual(['--require', '/p/space here.js']);
     expect(() => importWallaby({ env: { params: { env: 'VALUE="unfinished' } } })).toThrow('Unclosed quote');

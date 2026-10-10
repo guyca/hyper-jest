@@ -113,7 +113,7 @@ describe('nodeResolver requests and installs', () => {
 });
 
 describe('pickNode', () => {
-  it('maps .nvmrc to the fnm install (engine 24.15.0, mobile-modules 22.17.0)', () => {
+  it('maps .nvmrc to the fnm install (versions 24.15.0 and 22.17.0)', () => {
     const { deps, base } = machine();
     const eng = pickNode({ ...base, packageDir: '/w/engine/packages/a', repoRoot: '/w/engine', jestMajor: 30 }, deps);
     expect(eng).toMatchObject({ nodePath: fnm('24.15.0'), version: 'v24.15.0', source: 'nvmrc', requested: { spec: '24.15.0' }, env: {}, warnings: [] });
@@ -121,7 +121,7 @@ describe('pickNode', () => {
     expect(mm).toMatchObject({ nodePath: fnm('22.17.0'), version: 'v22.17.0', source: 'nvmrc' });
   });
 
-  it('warns and falls back to PATH when the requested version is missing (branded-apps 20.19.4)', () => {
+  it('warns and falls back to PATH when the requested version is missing (uninstalled workspace 20.19.4)', () => {
     const { deps, base } = machine();
     const r = pickNode({ ...base, packageDir: '/w/ba/p/a', repoRoot: '/w/ba', jestMajor: 29 }, deps);
     expect(r.source).toBe('path');

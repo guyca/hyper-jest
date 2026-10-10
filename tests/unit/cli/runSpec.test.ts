@@ -14,24 +14,24 @@ import {
 const ASSETS = '/ext/dist/worker';
 const NODE = '/Users/me/.local/share/fnm/node-versions/v24.19.0/installation/bin/node';
 
-/** jest 29.7 + ts-jest (relops shape): implicit config, script-level ignore pattern. */
+/** jest 29.7 + ts-jest (workspace shape): implicit config, script-level ignore pattern. */
 const v29: RunSpecProject = {
-  packageDir: '/ws/relops/packages/agent',
-  jestPkgDir: '/ws/relops/node_modules/jest',
+  packageDir: '/ws/workspace/packages/agent',
+  jestPkgDir: '/ws/workspace/node_modules/jest',
   cliFilters: { testPathIgnorePatterns: ['tests/integration'] },
   env: {},
   nodePath: NODE,
   nodeArgs: [],
 };
 
-/** jest 30.5.2 + babel-jest (delay-of-game shape): explicit .cjs config, project env, node args. */
+/** jest 30.5.2 + babel-jest (ESM package): explicit .cjs config, project env, node args. */
 const v30: RunSpecProject = {
-  packageDir: '/ws/dog/packages/domain',
-  jestPkgDir: '/ws/dog/node_modules/jest',
-  jestBinPath: '/ws/dog/node_modules/jest/bin/jest.js',
-  configArg: '/ws/dog/packages/domain/jest.config.cjs',
+  packageDir: '/ws/esm/packages/domain',
+  jestPkgDir: '/ws/esm/node_modules/jest',
+  jestBinPath: '/ws/esm/node_modules/jest/bin/jest.js',
+  configArg: '/ws/esm/packages/domain/jest.config.cjs',
   cliFilters: { testPathIgnorePatterns: [] },
-  env: { NODE_ENV: 'test', RNTL_SKIP_AUTO_DETECT_FAKE_TIMERS: 'true' },
+  env: { NODE_ENV: 'test', CUSTOM_TEST_MODE: 'true' },
   nodePath: NODE,
   nodeArgs: ['--max-old-space-size=4096'],
 };
@@ -79,7 +79,7 @@ describe('buildChildEnv', () => {
 
 describe('buildRunSpec', () => {
   it('jest 29 file run with coverage (snapshot)', () => {
-    const spec = buildRunSpec({ project: v29, workerAssetsDir: ASSETS, runId: 'r29', tests: [{ path: '/ws/relops/packages/agent/tests/unit/a.test.ts' }], updateSnapshot: 'new', coverage: { directory: '/tmp/hj/r29' }, hostEnv });
+    const spec = buildRunSpec({ project: v29, workerAssetsDir: ASSETS, runId: 'r29', tests: [{ path: '/ws/workspace/packages/agent/tests/unit/a.test.ts' }], updateSnapshot: 'new', coverage: { directory: '/tmp/hj/r29' }, hostEnv });
     expect(spec).toMatchSnapshot();
     expect(spec.args.join(' ')).not.toMatch(/testPathPattern/);
     expect(spec.args.indexOf('--')).toBe(spec.args.length - 2);
@@ -88,12 +88,12 @@ describe('buildRunSpec', () => {
   it('jest 30 single-test run with overlay, snapshot update and project env (snapshot)', () => {
     const spec = buildRunSpec({
       project: v30, workerAssetsDir: ASSETS, runId: 'r30', overlayManifestPath: '/tmp/hj/r30/overlay.json', updateSnapshot: 'all',
-      tests: [{ path: '/ws/dog/packages/domain/src/tests/a.test.ts', names: ['Team exposes city', 'Team equals (x)'] }], hostEnv,
+      tests: [{ path: '/ws/esm/packages/domain/src/tests/a.test.ts', names: ['Team exposes city', 'Team equals (x)'] }], hostEnv,
     });
     expect(spec).toMatchSnapshot();
     expect(spec.args.slice(0, 3)).toEqual(['--max-old-space-size=4096', '--require', `${ASSETS}/overlayPreload.cjs`]);
     expect(spec.env.HYPERJEST_OVERLAY).toBe('/tmp/hj/r30/overlay.json');
-    expect(spec.env.RNTL_SKIP_AUTO_DETECT_FAKE_TIMERS).toBe('true');
+    expect(spec.env.CUSTOM_TEST_MODE).toBe('true');
     expect(spec.preloadPath).toBe(`${ASSETS}/overlayPreload.cjs`);
   });
 
@@ -115,7 +115,7 @@ describe('buildRunSpec', () => {
 
 describe('buildDebugConfig', () => {
   it('jest 29 debug of one test (snapshot)', () => {
-    const cfg = buildDebugConfig({ project: v29, workerAssetsDir: ASSETS, runId: 'd29', title: 'add adds', tests: [{ path: '/ws/relops/packages/agent/tests/unit/a.test.ts', names: ['add adds'] }], hostEnv });
+    const cfg = buildDebugConfig({ project: v29, workerAssetsDir: ASSETS, runId: 'd29', title: 'add adds', tests: [{ path: '/ws/workspace/packages/agent/tests/unit/a.test.ts', names: ['add adds'] }], hostEnv });
     expect(cfg).toMatchSnapshot();
     expect(cfg.type).toBe('node');
     expect(cfg.args).toContain('--runInBand');
@@ -124,7 +124,7 @@ describe('buildDebugConfig', () => {
   });
 
   it('jest 30 debug of a file with overlay (snapshot)', () => {
-    const cfg = buildDebugConfig({ project: v30, workerAssetsDir: ASSETS, runId: 'd30', title: 'a.test.ts', overlayManifestPath: '/tmp/hj/d30/overlay.json', console: 'internalConsole', tests: [{ path: '/ws/dog/packages/domain/src/tests/a.test.ts' }], hostEnv });
+    const cfg = buildDebugConfig({ project: v30, workerAssetsDir: ASSETS, runId: 'd30', title: 'a.test.ts', overlayManifestPath: '/tmp/hj/d30/overlay.json', console: 'internalConsole', tests: [{ path: '/ws/esm/packages/domain/src/tests/a.test.ts' }], hostEnv });
     expect(cfg).toMatchSnapshot();
     expect(cfg.runtimeArgs).toEqual(['--max-old-space-size=4096', '--require', `${ASSETS}/overlayPreload.cjs`]);
     expect(cfg.args).not.toContain('-t');
@@ -133,9 +133,9 @@ describe('buildDebugConfig', () => {
 
 describe('buildFindRelatedSpec', () => {
   it('lists related tests as JSON (snapshot)', () => {
-    const spec = buildFindRelatedSpec({ project: v30, runId: 'f', sources: ['/ws/dog/packages/domain/src/entities/team.ts'], hostEnv });
+    const spec = buildFindRelatedSpec({ project: v30, runId: 'f', sources: ['/ws/esm/packages/domain/src/entities/team.ts'], hostEnv });
     expect(spec).toMatchSnapshot();
     expect(spec.args).toEqual(expect.arrayContaining(['--listTests', '--findRelatedTests', '--json']));
-    expect(spec.args.slice(-2)).toEqual(['--', '/ws/dog/packages/domain/src/entities/team.ts']);
+    expect(spec.args.slice(-2)).toEqual(['--', '/ws/esm/packages/domain/src/entities/team.ts']);
   });
 });

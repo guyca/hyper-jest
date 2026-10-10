@@ -12,8 +12,7 @@
  *   - testRegex:               string | string[] -> string[]; when set and testMatch is not explicit, testMatch = []
  * Globs are matched with picomatch `{dot: true}` against absolute paths (jest-util `globsToMatcher`).
  *
- * Also provides the default tables for Jest 29 / 30 (from jest-config `Defaults.js` / `index.js`) and
- * shono-testjs' three inline projects (from `@wix/shono-testjs/dist/src/jestConfig.js` 9.134 / 9.136).
+ * Also provides the default tables for Jest 29 / 30 (from jest-config `Defaults.js` / `index.js`).
  *
  * Pure: no fs, no 'vscode'.
  */
@@ -181,37 +180,6 @@ export const JEST_CONFIG_EXT_ORDER: Readonly<Record<29 | 30, readonly string[]>>
 
 export function jestConfigExtOrderFor(major: number | undefined): readonly string[] {
   return (major ?? 30) >= 30 ? JEST_CONFIG_EXT_ORDER[30] : JEST_CONFIG_EXT_ORDER[29];
-}
-
-export interface ShonoProjectsOptions {
-  /** Folders of the "Unit Tests" project besides `src`: `['unitTests']` (<= 9.134) or `['unitTests', 'tests']` (>= 9.136). */
-  unitTestsFolders?: string[];
-}
-
-/**
- * shono-testjs' three inline projects (jestConfig.js `projects`), all with `modulePathIgnorePatterns: ['dist']`
- * and `rootDir = process.cwd()` (= the package dir). testPathIgnorePatterns is Jest's default.
- */
-export function shonoProjectConfigs(rootDir: string, opts: ShonoProjectsOptions = {}): MatcherConfig[] {
-  const unitFolders = opts.unitTestsFolders ?? ['unitTests'];
-  const shared = { rootDir, modulePathIgnorePatterns: ['dist'] };
-  return [
-    {
-      ...shared,
-      displayName: 'Legacy Unit Tests',
-      testMatch: ['<rootDir>/**/__tests__/**/?(*.)+(spec|test).legacy.[jt]s?(x)', '<rootDir>/src/**/?(*.)+(spec|test).legacy.[jt]s?(x)'],
-    },
-    {
-      ...shared,
-      displayName: 'Unit Tests',
-      testMatch: [...unitFolders.map(f => `<rootDir>/${f}/**/*.spec.ts?(x)`), '<rootDir>/src/**/*.spec.ts?(x)'],
-    },
-    {
-      ...shared,
-      displayName: 'Headless Tests',
-      testMatch: ['<rootDir>/headlessTests/**/*.spec.ts?(x)'],
-    },
-  ];
 }
 
 // ---------------------------------------------------------------------------------------------

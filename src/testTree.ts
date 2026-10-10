@@ -209,7 +209,7 @@ export class TestExplorer implements vscode.Disposable {
     this.syncRuntimeItems(entry);
   }
 
-  /** Marks a file the project's matchers reject (Detox specs under shono, ...). */
+  /** Marks a file the project's matchers reject (for example files outside configured testMatch). */
   setFileNotMatched(filePath: string, notMatched: boolean, projectId?: string): void {
     const entry = this.fileEntry(filePath, projectId);
     if (!entry) return;

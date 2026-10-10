@@ -2,7 +2,7 @@
  * Resolves the PROJECT's Jest packages by following dependency edges from its `jest` package, and
  * loads them with absolute-path `require`. Never resolves from the repo root or the extension: in
  * monorepos the hoisted `jest-config`/`jest-circus` can be a different major than the `jest` the
- * project actually uses (mobile-apps-engine: root jest-config 29.7 vs jest 30.4.2).
+ * project actually uses (for example, root jest-config 29 vs package Jest 30).
  *
  * Chain (verified for 29.7.0, 30.4.2 and 30.5.2):
  *   jest -> jest-cli -> @jest/core -> {jest-config, jest-runtime, jest-runner, jest-watcher, jest-resolve-dependencies}
