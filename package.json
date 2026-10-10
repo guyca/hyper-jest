@@ -154,7 +154,7 @@
         "hyperjest.gutter.testDeclarations": { "type": "string", "enum": ["auto", "always", "never"], "default": "auto" },
         "hyperjest.colors.covered": { "type": "string", "default": "#62b455" },
         "hyperjest.colors.partiallyCovered": { "type": "string", "default": "#d2a032" },
-        "hyperjest.colors.notCovered": { "type": "string", "default": "#d2a032", "description": "Lines not executed by any test (yellow). Wallaby uses #cccccc." },
+        "hyperjest.colors.notCovered": { "type": "string", "default": "#cccccc", "description": "Lines not executed by any test (light grey)." },
         "hyperjest.colors.errorPath": { "type": "string", "default": "#ffa0a0" },
         "hyperjest.colors.errorSource": { "type": "string", "default": "#fe536a" },
         "hyperjest.inline.showErrors": { "type": "boolean", "default": true },
