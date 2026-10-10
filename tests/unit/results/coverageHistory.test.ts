@@ -72,9 +72,9 @@ describe('revision-backed affected selection', () => {
     expect(h.select(first)).toMatchObject({ kind: 'runs', runs: [{ path: SPEC, names: ['a'] }] });
     const meta = metadata(first), run = h.begin(meta, SPEC, ['a']);
     h.test(run, meta, 'a', 0); h.finish(run, meta);
-    expect(h.store.execBy().get(SOURCE)).toEqual(new Set([makeTestKey(SPEC, 'a', 0), makeTestKey(SPEC, 'b', 0)]));
+    expect(h.store.execBy().get(SOURCE)).toEqual(new Set([makeTestKey(SPEC, 'a', 0, 'p'), makeTestKey(SPEC, 'b', 0, 'p')]));
     const bStmt = meta.stmtStartLine.findIndex(line => line === 6);
-    expect(h.store.coverageFor(SOURCE)?.stmtHitBy.get(bStmt)).toContain(makeTestKey(SPEC, 'b', 0));
+    expect(h.store.coverageFor(SOURCE)?.stmtHitBy.get(bStmt)).toContain(makeTestKey(SPEC, 'b', 0, 'p'));
     expect(h.select(first.replace('x * 2', 'x * 3'))).toMatchObject({ kind: 'runs', runs: [{ path: SPEC, names: ['b'] }] });
     expect(h.select(TEXT)).toMatchObject({ kind: 'runs', runs: [{ path: SPEC, names: ['a'] }] });
   });
@@ -101,7 +101,7 @@ describe('revision-backed affected selection', () => {
     h.test(slow, old, 'b other', 1, OTHER); h.finish(slow, old, [], OTHER);
     expect(h.store.coverageFor(SOURCE)?.meta?.revision).toBe(newer.revision);
     expect(h.store.sourceSelection(SOURCE, newer.sourceText!.replace('x * 2', 'x * 3')).tests)
-      .toEqual(new Set([makeTestKey(SPEC, 'b', 0), makeTestKey(OTHER, 'b other', 0)]));
+      .toEqual(new Set([makeTestKey(SPEC, 'b', 0, 'p'), makeTestKey(OTHER, 'b other', 0, 'p')]));
   });
 
   it('preserves dependencies after a failed load or interruption and clears them with the project', () => {

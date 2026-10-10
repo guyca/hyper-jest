@@ -22,7 +22,8 @@ export type ProjectFlavor =
   /** A root config with `projects`. */
   | 'projects'
   /** User override from the `hyperjest.projects` setting. */
-  | 'override';
+  | 'override'
+  | 'hyperjest';
 
 export type ProjectStatus =
   | 'ok'
@@ -47,6 +48,11 @@ export interface ProjectSpec {
   reason?: string;
   /** Absolute path passed to jest as `-c` / `readConfigs({config})`. Undefined = implicit. */
   configArg?: string;
+  /** Native config identity, separate from the underlying Jest config. */
+  configFile?: string;
+  configKey?: string;
+  selected?: boolean;
+  scope?: import('./hyperConfig').ConfigScope;
   /** Resolved `jest` package dir (never node_modules/.bin). */
   jestPkgDir?: string;
   jestVersion?: string;
@@ -92,6 +98,8 @@ export interface InitMsg {
 }
 
 export interface RunTestSelection {
+  /** Host routing; workers receive only selections for their project. */
+  projectId?: string;
   /** Absolute test file path. */
   path: string;
   /** Full names (`ancestorTitles.join(' ') + ' ' + title`) to narrow to; undefined = whole file. */
@@ -332,13 +340,13 @@ export type WorkerToHost =
 
 export const TEST_KEY_SEP = '\0';
 
-export function makeTestKey(path: string, fullName: string, dupIndex: number): string {
-  return `${path}${TEST_KEY_SEP}${fullName}${TEST_KEY_SEP}${dupIndex}`;
+export function makeTestKey(path: string, fullName: string, dupIndex: number, projectId?: string): string {
+  return `${path}${TEST_KEY_SEP}${fullName}${TEST_KEY_SEP}${dupIndex}${projectId ? `${TEST_KEY_SEP}${projectId}` : ''}`;
 }
 
-export function parseTestKey(key: string): { path: string; fullName: string; dupIndex: number } {
-  const [path, fullName, dup] = key.split(TEST_KEY_SEP);
-  return { path, fullName, dupIndex: Number(dup) || 0 };
+export function parseTestKey(key: string): { path: string; fullName: string; dupIndex: number; projectId?: string } {
+  const [path, fullName, dup, projectId] = key.split(TEST_KEY_SEP);
+  return { path, fullName, dupIndex: Number(dup) || 0, ...(projectId ? { projectId } : {}) };
 }
 
 export function fullNameOf(ancestorTitles: string[], title: string): string {

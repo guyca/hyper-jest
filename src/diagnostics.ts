@@ -76,7 +76,9 @@ export class DiagnosticsPublisher implements vscode.Disposable {
         if (this.published.delete(path)) this.collection.delete(vscode.Uri.file(path));
         continue;
       }
-      const data = buildDiagnostics(path, this.store.testsInFile(path), file);
+      const records = this.store.allFiles().filter(f => f.path === path);
+      const data = records.flatMap(record => buildDiagnostics(path, this.store.testsInFile(path, record.projectId), record).map(d =>
+        records.length > 1 ? { ...d, message: `[${this.store.projectLabel(record.projectId)}] ${d.message}` } : d));
       const uri = vscode.Uri.file(path);
       if (data.length === 0) {
         if (this.published.delete(path)) this.collection.delete(uri);

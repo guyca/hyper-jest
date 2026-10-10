@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { RunCoordinator } from './runner';
-import type { ProjectRegistry } from './discovery/projectRegistry';
+import type { ProjectEntry, ProjectRegistry } from './discovery/projectRegistry';
 import type { ResultStore } from './results/resultStore';
 import type { Settings } from './settings';
 import type { WorkerPool } from './workerPool';
@@ -264,51 +264,32 @@ export function registerCommands(d: CommandDeps): vscode.Disposable[] {
   };
 
   /**
-   * Chooses which of the package's Jest configs runs the active file. The only lever is a package-level
-   * `hyperjest.projects` override (core/projectSpec `findOverride`), which pins the WHOLE package to one
-   * config, so this is offered only between sibling configs of the file's own package, says so in a
-   * confirmation, replaces any earlier pin of that package and can remove the pin again.
+   * Saves the package's selected configurations, replacing legacy pins and retaining other overrides.
    */
-  const selectProjectForFile = async () => {
-    const af = activeFile();
-    if (!af) return;
-    const current = registry.projectFor(af.path);
-    if (!current) { void vscode.window.showInformationMessage(`HyperJest: ${path.basename(af.path)} is not inside a Jest project.`); return; }
-    const pkgDir = current.spec.packageDir;
+  const selectConfigurations = async () => {
+    const packages = [...new Set(registry.all().map(e => e.spec.packageDir))].sort();
+    if (!packages.length) { await registry.refresh(); packages.push(...new Set(registry.all().map(e => e.spec.packageDir))); }
+    const pkgDir = packages.length === 1 ? packages[0] : (await vscode.window.showQuickPick(packages.map(packageDir => ({
+      label: path.basename(packageDir), description: packageDir, packageDir,
+    })), { placeHolder: 'Package to configure' }))?.packageDir;
+    if (!pkgDir) return;
+    const entries = registry.all().filter(e => e.spec.packageDir === pkgDir);
+    const choices = entries.map(e => ({
+      label: e.spec.configKey ?? (e.spec.configArg ? path.relative(pkgDir, e.spec.configArg) : '<implicit>'),
+      description: `${e.spec.selected !== false ? 'active · ' : ''}${e.spec.configKey === 'hyperjest.config.js' ? 'default · ' : ''}${e.spec.status}`,
+      detail: e.spec.reason ?? e.spec.configFile ?? e.spec.configArg ?? 'Jest implicit configuration',
+      picked: e.spec.selected !== false, spec: e.spec,
+    }));
+    const picks = await vscode.window.showQuickPick(choices, { canPickMany: true, placeHolder: 'Select configurations to run (none disables this package)' });
+    if (picks === undefined) return;
     const folders = (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath);
     const overrides = d.settings.get().projects;
     const existing = overrides.find(o => overrideTargets(o.packageDir, pkgDir, folders));
-    const others = overrides.filter(o => o !== existing);
-    const siblings = registry.all().filter(e => e.spec.status === 'ok' && e.spec.packageDir === pkgDir);
-    if (siblings.length < 2) {
-      if (existing?.configArg) {
-        const ok = await vscode.window.showInformationMessage(`HyperJest: ${current.spec.displayName} is pinned to ${existing.configArg} by hyperjest.projects. Remove the pin and rediscover the package's Jest configs?`, { modal: true }, 'Remove Pin');
-        if (ok !== 'Remove Pin') return;
-        const { configArg: _dropped, ...rest } = existing;
-        const keep = Object.keys(rest).some(k => k !== 'packageDir');
-        await d.settings.update('projects', keep ? [...others, rest] : others);
-      } else {
-        void vscode.window.showInformationMessage(`HyperJest: ${path.basename(af.path)} belongs to ${current.spec.displayName}, the only Jest project of its package.`);
-      }
-      return;
-    }
-    const pick = await vscode.window.showQuickPick(siblings.map(e => ({
-      label: e.spec.displayName,
-      description: `${e.spec.flavor}${e === current ? ' · current' : ''}`,
-      detail: e.spec.configArg ?? '(implicit config)',
-      e,
-    })), { placeHolder: `Jest config for ${path.basename(af.path)}` }).then(i => i?.e);
-    if (!pick || pick === current) return;
-    if (!pick.spec.configArg || pick.spec.flavor === 'shono') {
-      void vscode.window.showInformationMessage(`HyperJest: ${pick.spec.displayName} cannot be pinned with hyperjest.projects (${pick.spec.flavor === 'shono' ? 'a configArg override would drop shono\'s environment' : 'it has no config file'}).`);
-      return;
-    }
-    const dropped = siblings.filter(e => e !== pick).map(e => e.spec.displayName).join(', ');
-    const ok = await vscode.window.showWarningMessage(
-      `Pin ${path.basename(pkgDir)} to ${path.relative(pkgDir, pick.spec.configArg) || pick.spec.configArg}? This writes a hyperjest.projects override: the package's other Jest projects (${dropped}) are no longer discovered until the pin is removed (run this command again).`,
-      { modal: true }, 'Pin');
-    if (ok !== 'Pin') return;
-    await d.settings.update('projects', [...others, { ...existing, packageDir: pkgDir, configArg: pick.spec.configArg }]);
+    const { configArg: _pin, ...rest } = existing ?? {};
+    await d.settings.update('projects', [...overrides.filter(o => o !== existing), {
+      ...rest, packageDir: pkgDir,
+      configFiles: picks.map(p => p.spec.configKey ?? (p.spec.configArg ? path.relative(pkgDir, p.spec.configArg) : '<implicit>')),
+    }]);
   };
 
   const showMenu = async () => {
@@ -322,6 +303,7 @@ export function registerCommands(d: CommandDeps): vscode.Disposable[] {
       { label: state.paused ? '$(debug-start) Resume Live Runs' : '$(debug-pause) Pause Live Runs', cmd: 'hyperjest.togglePause' },
       { label: `$(settings-gear) Run Mode: ${state.runMode} (toggle)`, cmd: 'hyperjest.toggleRunMode' },
       { label: '$(pulse) Doctor', cmd: 'hyperjest.doctor' },
+      { label: '$(settings-gear) Select Configurations', cmd: 'hyperjest.selectConfigurations' },
       { label: '$(json) Show Resolved Jest Config', cmd: 'hyperjest.showResolvedConfig' },
       { label: '$(output) Show Output', cmd: 'hyperjest.showOutput' },
       { label: state.started ? '$(debug-stop) Stop HyperJest' : '$(play) Start HyperJest', cmd: state.started ? 'hyperjest.stop' : 'hyperjest.start' },
@@ -346,8 +328,8 @@ export function registerCommands(d: CommandDeps): vscode.Disposable[] {
     reg('hyperjest.runAll', async () => reportRun(await runner.runAll())),
     reg('hyperjest.runProjectTests', async () => {
       const af = activeFile();
-      const entry = af ? registry.projectFor(af.path) : await pickProject(registry);
-      if (entry) reportRun(await runner.runProject(entry.spec.id));
+      const entries = af ? registry.projectsFor(af.path) : [await pickProject(registry)].filter((e): e is ProjectEntry => !!e);
+      if (entries.length) for (const entry of entries) reportRun(await runner.runProject(entry.spec.id));
       else if (af) void vscode.window.showWarningMessage(`HyperJest: no Jest project contains ${path.basename(af.path)}.`, 'Doctor').then(c => c && vscode.commands.executeCommand('hyperjest.doctor'));
     }),
     reg('hyperjest.runFileTests', async (arg) => {
@@ -409,7 +391,8 @@ export function registerCommands(d: CommandDeps): vscode.Disposable[] {
     reg('hyperjest.clearValues', (arg) => { const t = lineOf(arg); if (t) d.clearInline(t.path, t.line); }),
     reg('hyperjest.clearFileValues', (arg) => { const t = lineOf(arg); if (t) d.clearInline(t.path); }),
     reg('hyperjest.toggleCoverage', () => d.toggleCoverage()),
-    reg('hyperjest.selectProjectForFile', () => selectProjectForFile()),
+    reg('hyperjest.selectConfigurations', selectConfigurations),
+    reg('hyperjest.selectProjectForFile', selectConfigurations),
     reg('hyperjest.showResolvedConfig', showResolvedConfig),
     reg('hyperjest.doctor', doctor),
     reg('hyperjest.copyDiagnostics', async () => {
@@ -447,7 +430,7 @@ export function overrideTargets(overrideDir: string, packageDir: string, workspa
 }
 
 async function pickProject(registry: ProjectRegistry) {
-  const entries = registry.all().filter(e => e.spec.status === 'ok');
+  const entries = registry.all().filter(e => e.spec.status === 'ok' && e.spec.selected !== false);
   if (entries.length === 1) return entries[0];
   const pick = await vscode.window.showQuickPick(entries.map(e => ({ label: e.spec.displayName, description: `${e.spec.flavor} · jest ${e.spec.jestVersion ?? '?'}`, detail: e.spec.packageDir, e })), { placeHolder: 'Jest project' });
   return pick?.e;

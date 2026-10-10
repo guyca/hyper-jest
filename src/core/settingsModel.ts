@@ -6,6 +6,8 @@ export type SmartStart = 'open' | 'always' | 'never';
 export interface ProjectOverride {
   packageDir: string;
   configArg?: string;
+  /** Package-relative config paths; omitted = automatic, [] = none. */
+  configFiles?: string[];
   env?: Record<string, string>;
   nodePath?: string;
   disabled?: boolean;
@@ -62,7 +64,7 @@ export const DEFAULT_SETTINGS: HyperJestSettings = {
   runMode: 'onType',
   onTypeDebounceMs: 300,
   onSaveDebounceMs: 100,
-  smartStart: 'open',
+  smartStart: 'always',
   liveRun: { maxTestFilesPerEdit: 8 },
   engine: 'auto',
   maxWorkers: 0,

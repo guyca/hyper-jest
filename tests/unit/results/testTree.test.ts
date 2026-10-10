@@ -7,6 +7,7 @@ import { ResultStore } from '../../../src/results/resultStore';
 import { TestExplorer, messagesFor, recordParsed } from '../../../src/testTree';
 import type { RunnerApi, RunHandle, RunnerState, SnapshotScope } from '../../../src/runnerApi';
 import type { ProjectSpec, RunTestSelection } from '../../../src/core/protocol';
+import { makeTestKey } from '../../../src/core/protocol';
 import { DEFAULT_SETTINGS } from '../../../src/core/settingsModel';
 import { noopLogger } from '../../../src/core/logger';
 import { PROJECT, SPEC, SRC, T, key, applyFullRun, parsedMathSpec, fileStart, testStart, testResult, fileResult, testCoverage, coverageMeta, node, range } from './fixtures';
@@ -152,7 +153,7 @@ describe('TestExplorer tree', () => {
     expect(explorer.itemForTestKey(key(T.eachNeg))!.parent).toBe(each);
     expect(explorer.itemForTestKey(key(T.addTwo))!.id).toBe(`${PROJECT}\u001fsrc/__tests__/math.test.js\u001fdescribe:add\u001ftest:adds two numbers`);
     // A narrowed run reports a helper-generated test the parser never saw.
-    store.registerRun('r1b', [{ path: SPEC, names: ['classify helper generated'] }]);
+    store.registerRun('r1b', [{ path: SPEC, projectId: PROJECT, names: ['classify helper generated'] }]);
     store.apply(fileStart('r1b'), PROJECT);
     store.apply(testResult('r1b', 'classify helper generated', 'passed', { line: 2 }), PROJECT);
     store.apply(fileResult('r1b', 'passed'), PROJECT);
@@ -188,7 +189,7 @@ describe('TestExplorer tree', () => {
     explorer.buildProjectItem(spec);
     explorer.setFileParsed(PROJECT, SPEC, parsedMathSpec());
     const name = 'classify helpers deep generated';
-    store.registerRun('r1', [{ path: SPEC, names: [name] }]);
+    store.registerRun('r1', [{ path: SPEC, projectId: PROJECT, names: [name] }]);
     store.apply(fileStart('r1'), PROJECT);
     store.apply({ ...testResult('r1', name, 'passed', { line: 2 }), ancestorTitles: ['classify', 'helpers', 'deep'], title: 'generated' }, PROJECT);
     store.apply(fileResult('r1', 'passed'), PROJECT);
@@ -203,8 +204,8 @@ describe('TestExplorer tree', () => {
     expect(item.parent).toBe(deep);
     expect(item.label).toBe('generated');
     expect(item.range!.start.line).toBe(1);
-    expect(explorer.selectionsFor([helpers])).toEqual([{ path: SPEC, names: [name] }]);
-    expect(explorer.selectionsFor([classify])).toEqual([{ path: SPEC }]); // .each rows unknown yet -> whole file
+    expect(explorer.selectionsFor([helpers])).toEqual([{ path: SPEC, projectId: PROJECT, names: [name] }]);
+    expect(explorer.selectionsFor([classify])).toEqual([{ path: SPEC, projectId: PROJECT }]); // .each rows unknown yet -> whole file
     expect(explorer.testKeysFor(helpers)).toEqual([key(name)]);
     // No "not registered" after a narrowed run.
     expect(findItem(controller.items, `${base}\u001fdescribe:add\u001ftest:adds two numbers`).description).toBeUndefined();
@@ -213,7 +214,7 @@ describe('TestExplorer tree', () => {
     flush();
     expect(classify.children.get(`${base}\u001fdescribe:classify\u001fdescribe:helpers`)).toBeUndefined();
     expect(explorer.itemForTestKey(key(name))).toBeUndefined();
-    expect(explorer.selectionsFor([classify])).toEqual([{ path: SPEC, names: [T.eachNeg, T.eachZero, T.positive, T.skipped, T.todo] }]);
+    expect(explorer.selectionsFor([classify])).toEqual([{ path: SPEC, projectId: PROJECT, names: [T.eachNeg, T.eachZero, T.positive, T.skipped, T.todo] }]);
   });
 
   it('builds a runtime tree from ancestorTitles when the file has not been parsed', () => {
@@ -229,7 +230,7 @@ describe('TestExplorer tree', () => {
     const item = explorer.itemForTestKey(key(T.addTwo))!;
     expect(item.id).toBe(`${base}\u001fdescribe:add\u001ftest:adds two numbers`);
     expect(item.parent).toBe(add);
-    expect(explorer.selectionsFor([add])).toEqual([{ path: SPEC, names: [T.addTwo, T.addNeg] }]);
+    expect(explorer.selectionsFor([add])).toEqual([{ path: SPEC, projectId: PROJECT, names: [T.addTwo, T.addNeg] }]);
     expect(explorer.itemForFile(SPEC)!.children.size).toBe(3);
     // Parsing later replaces the runtime tree with parsed items carrying the same ids.
     explorer.setFileParsed(PROJECT, SPEC, parsedMathSpec());
@@ -263,7 +264,7 @@ describe('TestExplorer tree', () => {
     expect(explorer.itemForTestKey(key('dup same', 1))!.label).toBe('same #2');
     const live = controller.runs[0] as FakeTestRun;
     expect(live.of('failed').map(e => e.id)).toEqual([`${base}\u001fdescribe:suite %s\u001ftest:inner\u001frow:suite 2 inner`, `${base}\u001fdescribe:dup\u001ftest:same#1`]);
-    expect(explorer.selectionsFor([explorer.itemForFile(SPEC)!.children.get(`${base}\u001fdescribe:dup`)!])).toEqual([{ path: SPEC, names: ['dup same'] }]);
+    expect(explorer.selectionsFor([explorer.itemForFile(SPEC)!.children.get(`${base}\u001fdescribe:dup`)!])).toEqual([{ path: SPEC, projectId: PROJECT, names: ['dup same'] }]);
   });
 
   it('computes run selections for projects, files, describes, tests and .each rows', () => {
@@ -272,22 +273,59 @@ describe('TestExplorer tree', () => {
     explorer.setProjectFiles(PROJECT, [SPEC, '/repo/pkg/src/__tests__/greet.test.js']);
     explorer.setFileParsed(PROJECT, SPEC, parsedMathSpec());
     const base = `${PROJECT}\u001fsrc/__tests__/math.test.js`;
-    expect(explorer.selectionsFor([project])).toEqual([{ path: SPEC }, { path: '/repo/pkg/src/__tests__/greet.test.js' }]);
-    expect(explorer.selectionsFor([explorer.itemForFile(SPEC)!])).toEqual([{ path: SPEC }]);
-    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:add`)])).toEqual([{ path: SPEC, names: [T.addTwo, T.addNeg] }]);
+    expect(explorer.selectionsFor([project])).toEqual([{ path: SPEC, projectId: PROJECT }, { path: '/repo/pkg/src/__tests__/greet.test.js', projectId: PROJECT }]);
+    expect(explorer.selectionsFor([explorer.itemForFile(SPEC)!])).toEqual([{ path: SPEC, projectId: PROJECT }]);
+    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:add`)])).toEqual([{ path: SPEC, projectId: PROJECT, names: [T.addTwo, T.addNeg] }]);
     // `.each` without runtime rows cannot be named statically -> whole file.
-    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:classify`)])).toEqual([{ path: SPEC }]);
+    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:classify`)])).toEqual([{ path: SPEC, projectId: PROJECT }]);
     applyFullRun(store, 'r1');
     flush();
-    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:classify\u001ftest:classify(%i) -> %s`)])).toEqual([{ path: SPEC, names: [T.eachNeg, T.eachZero] }]);
-    expect(explorer.selectionsFor([explorer.itemForTestKey(key(T.eachZero))!])).toEqual([{ path: SPEC, names: [T.eachZero] }]);
-    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:add`)], [findItem(controller.items, `${base}\u001fdescribe:add\u001ftest:adds two numbers`)])).toEqual([{ path: SPEC, names: [T.addNeg] }]);
+    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:classify\u001ftest:classify(%i) -> %s`)])).toEqual([{ path: SPEC, projectId: PROJECT, names: [T.eachNeg, T.eachZero] }]);
+    expect(explorer.selectionsFor([explorer.itemForTestKey(key(T.eachZero))!])).toEqual([{ path: SPEC, projectId: PROJECT, names: [T.eachZero] }]);
+    expect(explorer.selectionsFor([findItem(controller.items, `${base}\u001fdescribe:add`)], [findItem(controller.items, `${base}\u001fdescribe:add\u001ftest:adds two numbers`)])).toEqual([{ path: SPEC, projectId: PROJECT, names: [T.addNeg] }]);
     expect(explorer.testKeysFor(findItem(controller.items, `${base}\u001fdescribe:add`)).sort()).toEqual([key(T.addNeg), key(T.addTwo)].sort());
     expect(explorer.testKeysFor(explorer.itemForFile(SPEC)!)).toHaveLength(9);
   });
 });
 
 describe('profiles and live runs', () => {
+  it('keeps overlapping config branches, results and requested coverage independent', async () => {
+    const { explorer, controller, store, runner, flush } = setup();
+    explorer.buildProjectItem(spec);
+    explorer.buildProjectItem({ ...spec, id: 'other', displayName: 'other config' });
+    explorer.setFileParsed(PROJECT, SPEC, parsedMathSpec());
+    explorer.setFileParsed('other', SPEC, parsedMathSpec());
+    const first = explorer.itemForFile(SPEC, PROJECT)!;
+    const other = explorer.itemForFile(SPEC, 'other')!;
+    expect(first.id).not.toBe(other.id);
+    expect(explorer.selectionsFor([other])).toEqual([{ path: SPEC, projectId: 'other' }]);
+    const pending = controller.profiles[2].runHandler(new vscode.TestRunRequest([first]), new vscode.CancellationTokenSource().token) as Promise<void>;
+    await Promise.resolve(); await Promise.resolve();
+    applyFullRun(store, 'first');
+    store.apply(fileStart('second'), 'other');
+    store.apply(coverageMeta(), 'other');
+    store.apply(testCoverage('second', T.addTwo, [9]), 'other');
+    store.apply(testResult('second', T.addTwo, 'passed', { line: 4 }), 'other');
+    store.apply(fileResult('second', 'passed'), 'other');
+    flush();
+    const otherKey = makeTestKey(SPEC, T.addTwo, 0, 'other');
+    expect(explorer.itemForTestKey(otherKey)?.id).toContain('other\u001f');
+    expect(explorer.testKeysFor(other)).toEqual([otherKey]);
+    const run = controller.runs[0] as FakeTestRun;
+    expect(run.of('passed').every(event => event.id?.startsWith(`${PROJECT}\u001f`))).toBe(true);
+    expect(run.of('failed')).toHaveLength(1);
+    runner.resolveDone!(); await pending;
+    const coverage = run.of('coverage')[0].coverage as vscode.FileCoverage;
+    expect(coverage.statementCoverage).toEqual({ covered: 9, total: 10 });
+    expect(coverage.includesTests!.every(item => explorer.projectIdFor(item) === PROJECT)).toBe(true);
+    expect((explorer.loadDetailedCoverage(coverage, undefined)[9] as vscode.StatementCoverage).executed).toBe(0);
+    store.clearProject('other'); explorer.removeProject('other'); flush();
+    expect(explorer.itemForTestKey(key(T.positive))).toBeDefined();
+    expect(store.test(key(T.positive))?.status).toBe('failed');
+    expect(explorer.itemForTestKey(otherKey)).toBeUndefined();
+    explorer.dispose(); store.dispose();
+  });
+
   it('Run profile enqueues, delegates to the runner, publishes results into the explicit run and ends it', async () => {
     const { explorer, controller, store, runner, flush } = setup();
     explorer.buildProjectItem(spec);
@@ -298,7 +336,7 @@ describe('profiles and live runs', () => {
     const pending = controller.profiles[0].runHandler(request, token) as Promise<void>;
     await Promise.resolve();
     await Promise.resolve();
-    expect(runner.calls[0]).toMatchObject({ kind: 'runFiles', arg: { selections: [{ path: SPEC }], reason: 'explicit', opts: { updateSnapshot: 'new', priority: 0 } } });
+    expect(runner.calls[0]).toMatchObject({ kind: 'runFiles', arg: { selections: [{ path: SPEC, projectId: PROJECT }], reason: 'explicit', opts: { updateSnapshot: 'new', priority: 0 } } });
     const run = controller.runs[0] as FakeTestRun;
     expect(run.isPersisted).toBe(true);
     expect(run.of('enqueued').length).toBe(8); // every leaf item of the file
@@ -325,7 +363,7 @@ describe('profiles and live runs', () => {
     explorer.setFileParsed(PROJECT, SPEC, parsedMathSpec());
     const request = new vscode.TestRunRequest([explorer.itemForFile(SPEC)!], undefined, controller.profiles[0], true);
     await controller.profiles[0].runHandler(request, new vscode.CancellationTokenSource().token);
-    expect(runner.calls).toEqual([{ kind: 'watch', arg: [{ path: SPEC }] }]);
+    expect(runner.calls).toEqual([{ kind: 'watch', arg: [{ path: SPEC, projectId: PROJECT }] }]);
     expect(controller.runs).toHaveLength(0);
   });
 
@@ -335,13 +373,13 @@ describe('profiles and live runs', () => {
     explorer.setFileParsed(PROJECT, SPEC, parsedMathSpec());
     const item = findItem(controller.items, `${PROJECT}\u001fsrc/__tests__/math.test.js\u001fdescribe:add\u001ftest:adds two numbers`);
     await controller.profiles[1].runHandler(new vscode.TestRunRequest([item]), new vscode.CancellationTokenSource().token);
-    expect(runner.calls[0]).toEqual({ kind: 'debug', arg: { path: SPEC, names: [T.addTwo] } });
+    expect(runner.calls[0]).toEqual({ kind: 'debug', arg: { path: SPEC, projectId: PROJECT, names: [T.addTwo] } });
     expect(controller.runs[0].ended).toBe(true);
     const cts = new vscode.CancellationTokenSource();
     const pending = controller.profiles[3].runHandler(new vscode.TestRunRequest([item]), cts.token) as Promise<void>;
     await Promise.resolve();
     await Promise.resolve();
-    expect(runner.calls[1]).toEqual({ kind: 'updateSnapshots', arg: { kind: 'selection', selections: [{ path: SPEC, names: [T.addTwo] }] } });
+    expect(runner.calls[1]).toEqual({ kind: 'updateSnapshots', arg: { kind: 'selection', selections: [{ path: SPEC, projectId: PROJECT, names: [T.addTwo] }] } });
     cts.cancel();
     expect(runner.calls[2]).toEqual({ kind: 'cancel', arg: 'rx' });
     runner.resolveDone!();

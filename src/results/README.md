@@ -5,7 +5,8 @@ modules hold the state and its projections; the rest are thin VS Code adapters t
 
 | File | Role | `vscode`? |
 |---|---|---|
-| `src/results/resultStore.ts` | `ResultStore`: tests, files, coverage, loadedBy/execBy, inline console/value entries, stale marks, run generations; coalesced change event | no |
+| `src/results/resultStore.ts` | `ResultStore`: config partitions, host test identities, aggregate editor feedback and compatible coverage projection | no |
+| `src/results/projectResultStore.ts` | `ProjectResultStore`: per-config tests, files, coverage, dependencies, inline entries, stale marks and run generations | no |
 | `src/results/lineView.ts` | `computeLineView` / `LineViewCache` (per-line gutter state + inline text), `inlineTextFor`, `matchRecordsToNodes` (runtime results ↔ parsed tree, over `core/testIds`), `wordDiff` / `compactDiff` | no |
 | `src/iconAssets.ts` | `IconAssets`: writes the gutter SVGs for the current `hyperjest.colors.*` into a directory | no |
 | `src/runnerApi.ts` | `RunnerApi`: the contract the surfaces call to run/debug/cancel (implemented by `runner.ts`) | no |
@@ -26,6 +27,12 @@ Unit tests: `tests/unit/results/*.test.ts` (pure modules directly; UI modules th
 
 `new ResultStore(opts?)` — `opts.coalesceMs` (default 16), `setTimer`/`clearTimer`/`now` (injectable
 for tests), `maxEntriesPerLine` (inline entries kept per file/line/generation, default 50).
+
+Each config has an independent partition accessed through `forProject(projectId)`. Worker-local test
+keys remain `path\0fullName\0dupIndex`; intake appends `\0projectId` for host identities. File lookups and
+coverage accept a project identity when a caller needs one config. Editor views combine partitions;
+coverage statements are projected into compatible source coordinates before combining contributions.
+Removing a config clears only its partition.
 
 ### Intake
 
@@ -72,7 +79,7 @@ testKeys), `loadedBy()` (source → test files), `coverageFor(source)`, `covered
 `entriesFor(path)`, `parsed(path)`, `staleInfo(path)`, `lastRun(path)`, `started(path)`,
 `allFiles()`, `allTests()`, `generation` (bumps on every mutation).
 
-Keys: `testKey = path\0fullName\0dupIndex` (`makeTestKey` / `parseTestKey` in protocol.ts).
+Host keys: `testKey = path\0fullName\0dupIndex\0projectId` (`makeTestKey` / `parseTestKey` in protocol.ts).
 Runtime locations are 1-based (Jest); views and parsed ranges are 0-based (VS Code).
 
 ### Source revisions and affected selection

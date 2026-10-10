@@ -42,6 +42,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getSettings: () => settings.get(),
     log,
   });
+  const discoverySettings = () => { const s = settings.get(); return JSON.stringify([s.projects, s.discovery, s.shono, s.nodePath, s.nodeArgs, s.env]); };
+  let previousDiscoverySettings = discoverySettings();
   const registry = new ProjectRegistry(pool, () => settings.get(), log, context.globalState);
   const store = new ResultStore({ maxEntriesPerLine: Math.max(10, settings.get().console.maxEntriesPerTest) });
   const runner = new RunCoordinator(pool, registry, store, () => settings.get(), workerAssetsDir, log);
@@ -93,7 +95,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   const syncExplorerProjects = (ex: TestExplorer, specs: readonly ProjectSpec[]) => {
     const live = new Set<string>();
-    for (const spec of specs) if (spec.status !== 'disabled') { ex.buildProjectItem(spec); live.add(spec.id); }
+    for (const spec of specs) if (spec.status !== 'disabled' && spec.selected !== false) {
+      ex.buildProjectItem(spec); live.add(spec.id);
+      if (ex.isProjectResolved(spec.id)) {
+        const entry = registry.get(spec.id), revision = entry?.revision;
+        void registry.testFilesOf(spec.id).then(files => {
+          if (registry.get(spec.id) === entry && entry?.revision === revision && entry?.spec.selected !== false) ex.setProjectFiles(spec.id, files);
+        }, error => log.warn(`Could not refresh ${spec.displayName}: ${String(error)}`));
+      }
+    }
     for (const id of ex.projectIds()) if (!live.has(id)) ex.removeProject(id);
   };
   const createExplorer = (): TestExplorer => {
@@ -132,8 +142,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // An unrecoverable syntax error keeps the last good parse (recordParsed) while the user is typing.
   context.subscriptions.push(runner.docs.onDidParse((p, parsed) => {
     recordParsed(store, p, parsed);
-    const projectId = explorer ? registry.projectIdFor(p) : undefined;
-    if (projectId) explorer?.setFileParsed(projectId, p, parsed);
+    if (explorer) for (const entry of registry.projectsFor(p)) if (registry.acceptsTest(entry.spec.id, p)) explorer.setFileParsed(entry.spec.id, p, parsed);
   }));
 
   const codeLens = new TestCodeLensProvider(store, () => settings.get());
@@ -186,6 +195,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidCloseTextDocument(doc => { if (doc.uri.scheme === 'file') { viewCache.delete(doc.uri.fsPath); lineShifts.forget(doc.uri.fsPath); } }),
     settings.onDidChange(async () => {
       registry.onSettingsChanged();
+      const nextDiscoverySettings = discoverySettings();
+      if (nextDiscoverySettings !== previousDiscoverySettings) { previousDiscoverySettings = nextDiscoverySettings; await registry.refresh(); }
       syncExplorerEnabled();
       // onColorsChanged pushes hyperjest.colors.* into IconAssets, regenerates icons and recreates the types.
       await decorations.onColorsChanged();
@@ -232,7 +243,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }));
 
   refreshStatus();
-  // Start automatically: discovery is cheap and workers only spawn when a test file is used.
+  // Import and select configurations before Smart Start schedules the selected tests.
   await runner.start();
   log.info('HyperJest started');
 }

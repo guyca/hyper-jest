@@ -21,7 +21,7 @@ import * as vscode from 'vscode';
 import type { Logger } from './core/logger';
 import type { FailureInfo, ProjectSpec, RunTestSelection } from './core/protocol';
 import { parseTestKey } from './core/protocol';
-import type { FileRecord, TestRecord } from './core/resultModel';
+import type { FileCoverage, FileRecord, TestRecord } from './core/resultModel';
 import type { HyperJestSettings } from './core/settingsModel';
 import { parsedNodeId, type ParsedFile, type ParsedNode } from './core/testModel';
 import {
@@ -88,6 +88,8 @@ const RUNTIME_ONLY = 'runtime only';
  * node/test ids use `\0` as separator (core/testIds). Map it to the ASCII unit separator for item ids only;
  * all internal maps key by the created item's id, so the mapping stays consistent.
  */
+function targetKey(projectId: string, file: string): string { return `${projectId}\0${file}`; }
+
 function itemId(id: string): string {
   return id.replace(/\0/g, '\u001f');
 }
@@ -110,6 +112,7 @@ export class TestExplorer implements vscode.Disposable {
   private readonly projects = new Map<string, { spec: ProjectSpec; item: vscode.TestItem; filesListed?: boolean }>();
   private readonly files = new Map<string, FileEntry>();
   private readonly itemIndex = new Map<string, ItemInfo>();
+  private readonly publishedCoverage = new WeakMap<vscode.FileCoverage, FileCoverage>();
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(private readonly deps: TestExplorerDeps) {
@@ -152,7 +155,7 @@ export class TestExplorer implements vscode.Disposable {
   removeProject(projectId: string): void {
     const p = this.projects.get(projectId);
     if (!p) return;
-    for (const [filePath, entry] of [...this.files]) if (entry.projectId === projectId) this.removeFile(filePath);
+    for (const entry of [...this.files.values()]) if (entry.projectId === projectId) this.removeFile(entry.path, projectId);
     this.controller.items.delete(p.item.id);
     this.projects.delete(projectId);
   }
@@ -163,7 +166,7 @@ export class TestExplorer implements vscode.Disposable {
     if (!project) { this.deps.log.warn(`testTree: setProjectFiles for unknown project ${projectId}`); return; }
     project.filesListed = true;
     const keep = new Set(paths);
-    for (const [filePath, entry] of [...this.files]) if (entry.projectId === projectId && !keep.has(filePath)) this.removeFile(filePath);
+    for (const entry of [...this.files.values()]) if (entry.projectId === projectId && !keep.has(entry.path)) this.removeFile(entry.path, projectId);
     const items: vscode.TestItem[] = [];
     for (const filePath of paths) items.push(this.ensureFile(projectId, filePath).item);
     project.item.children.replace(items.sort((a, b) => a.label.localeCompare(b.label)));
@@ -175,12 +178,12 @@ export class TestExplorer implements vscode.Disposable {
     return entry.item;
   }
 
-  removeFile(filePath: string): void {
-    const entry = this.files.get(filePath);
-    if (!entry) return;
-    this.projects.get(entry.projectId)?.item.children.delete(entry.item.id);
-    this.forgetItems(entry);
-    this.files.delete(filePath);
+  removeFile(filePath: string, projectId?: string): void {
+    for (const entry of this.fileEntries(filePath).filter(e => projectId === undefined || e.projectId === projectId)) {
+      this.projects.get(entry.projectId)?.item.children.delete(entry.item.id);
+      this.forgetItems(entry);
+      this.files.delete(targetKey(entry.projectId, entry.path));
+    }
   }
 
   /**
@@ -207,8 +210,8 @@ export class TestExplorer implements vscode.Disposable {
   }
 
   /** Marks a file the project's matchers reject (Detox specs under shono, ...). */
-  setFileNotMatched(filePath: string, notMatched: boolean): void {
-    const entry = this.files.get(filePath);
+  setFileNotMatched(filePath: string, notMatched: boolean, projectId?: string): void {
+    const entry = this.fileEntry(filePath, projectId);
     if (!entry) return;
     entry.notMatched = notMatched;
     entry.item.description = notMatched ? 'not matched by the project\'s testMatch' : undefined;
@@ -218,10 +221,12 @@ export class TestExplorer implements vscode.Disposable {
   // Lookups
   // ------------------------------------------------------------------------------------------
 
-  fileEntry(filePath: string): FileEntry | undefined { return this.files.get(filePath); }
-  itemForFile(filePath: string): vscode.TestItem | undefined { return this.files.get(filePath)?.item; }
+  fileEntries(filePath: string): FileEntry[] { return [...this.files.values()].filter(e => e.path === filePath); }
+  fileEntry(filePath: string, projectId?: string): FileEntry | undefined { return projectId === undefined ? this.fileEntries(filePath)[0] : this.files.get(targetKey(projectId, filePath)); }
+  itemForFile(filePath: string, projectId?: string): vscode.TestItem | undefined { return this.fileEntry(filePath, projectId)?.item; }
   itemForTestKey(testKey: string): vscode.TestItem | undefined {
-    return this.files.get(parseTestKey(testKey).path)?.keyItems.get(testKey);
+    const { path: file, projectId } = parseTestKey(testKey);
+    return this.fileEntry(file, projectId)?.keyItems.get(testKey) ?? this.fileEntries(file).map(e => e.keyItems.get(testKey)).find(Boolean);
   }
   projectSpec(projectId: string): ProjectSpec | undefined { return this.projects.get(projectId)?.spec; }
   /** Ids of every project item in the tree. */
@@ -249,7 +254,7 @@ export class TestExplorer implements vscode.Disposable {
       for (const [key, keyed] of info.entry.keyItems) if (keyed === item || isDescendant(keyed, item)) out.push(key);
     } else {
       // File or project item.
-      const entry = this.files.get(item.uri?.fsPath ?? '');
+      const entry = this.fileEntries(item.uri?.fsPath ?? '').find(e => e.item === item);
       if (entry && entry.item === item) for (const key of entry.keyItems.keys()) out.push(key);
       else item.children.forEach(child => out.push(...this.testKeysFor(child)));
     }
@@ -275,24 +280,24 @@ export class TestExplorer implements vscode.Disposable {
       if (excluded.has(item.id)) return;
       const project = this.projects.get(item.id);
       if (project) {
-        for (const entry of this.files.values()) if (entry.projectId === project.spec.id && !excluded.has(entry.item.id)) whole.add(entry.path);
+        for (const entry of this.files.values()) if (entry.projectId === project.spec.id && !excluded.has(entry.item.id)) whole.add(targetKey(entry.projectId, entry.path));
         return;
       }
       const info = this.itemIndex.get(item.id);
       if (!info) {
         const entry = [...this.files.values()].find(e => e.item === item);
-        if (entry) whole.add(entry.path);
+        if (entry) whole.add(targetKey(entry.projectId, entry.path));
         return;
       }
-      if (info.testKey) { addNames(info.entry.path, [parseTestKey(info.testKey).fullName]); return; }
-      if (info.node) { addNames(info.entry.path, this.namesForNode(info.entry, info.node, excluded)); return; }
+      if (info.testKey) { addNames(targetKey(info.entry.projectId, info.entry.path), [parseTestKey(info.testKey).fullName]); return; }
+      if (info.node) { addNames(targetKey(info.entry.projectId, info.entry.path), this.namesForNode(info.entry, info.node, excluded)); return; }
       // A runtime-only describe: whatever runtime tests it holds.
       item.children.forEach(child => visit(child));
     };
     for (const item of items) visit(item);
     const out: RunTestSelection[] = [];
-    for (const filePath of whole) out.push({ path: filePath });
-    for (const [filePath, set] of names) if (!whole.has(filePath)) out.push({ path: filePath, names: [...set] });
+    for (const key of whole) { const [projectId, filePath] = key.split('\0'); out.push({ path: filePath, projectId }); }
+    for (const [key, set] of names) if (!whole.has(key)) { const [projectId, filePath] = key.split('\0'); out.push({ path: filePath, projectId, names: [...set] }); }
     return out;
   }
 
@@ -338,18 +343,14 @@ export class TestExplorer implements vscode.Disposable {
   // ------------------------------------------------------------------------------------------
 
   private onStoreChange(paths: readonly string[]): void {
-    for (const p of paths) {
-      const entry = this.files.get(p);
-      if (!entry) continue;
-      const file = this.deps.store.fileRecord(p);
+    for (const p of paths) for (const entry of this.fileEntries(p)) {
+      const file = this.deps.store.fileRecord(p, entry.projectId);
       this.syncRuntimeItems(entry);
       if (file) {
-        if (file.status === 'notMatched' && !entry.notMatched) this.setFileNotMatched(p, true);
+        this.setFileNotMatched(p, file.status === 'notMatched', entry.projectId);
         if (file.stale && file.status !== 'running' && file.status !== 'queued') {
           if (!entry.invalidated) { entry.invalidated = true; this.controller.invalidateTestResults(entry.item); }
-        } else if (!file.stale) {
-          entry.invalidated = false;
-        }
+        } else if (!file.stale) entry.invalidated = false;
       }
     }
     this.live.publish(paths);
@@ -358,7 +359,7 @@ export class TestExplorer implements vscode.Disposable {
   /** Reconciles the store's records with the parsed tree: `.each` rows, runtime-only items, descriptions. */
   syncRuntimeItems(entry: FileEntry): void {
     const store = this.deps.store;
-    const records = orderForReconcile(store.testsInFile(entry.path));
+    const records = orderForReconcile(store.testsInFile(entry.path, entry.projectId));
     const ids: ReconcileIds = { projectId: entry.projectId, relPath: entry.relPath };
     const parsed = entry.parsed && !entry.parsed.parseError ? entry.parsed : undefined;
     const reconciled = parsed ? this.reconcileRecords(parsed, records, ids) : runtimeTree(records, fileIdOf(ids));
@@ -433,8 +434,8 @@ export class TestExplorer implements vscode.Disposable {
 
     // Static tests without a result after an unfiltered run were never registered at runtime
     // (a file that failed to load reports nothing at all, so it is excluded).
-    const lastRun = store.lastRun(entry.path);
-    const file = store.fileRecord(entry.path);
+    const lastRun = store.lastRun(entry.path, entry.projectId);
+    const file = store.fileRecord(entry.path, entry.projectId);
     const unreported = parsed && lastRun && !lastRun.filtered && file?.status !== 'errored'
       ? new Set(unreportedNodes(parsed, records, ids).map(u => u.node))
       : undefined;
@@ -473,8 +474,7 @@ export class TestExplorer implements vscode.Disposable {
     }
     const run = this.controller.createTestRun(request, undefined, true);
     for (const item of include) this.enqueueTree(run, item, new Set((request.exclude ?? []).map(i => i.id)));
-    const paths = new Set(selections.map(s => s.path));
-    this.live.attachExplicitRun(run, paths);
+    this.live.attachExplicitRun(run, new Set(selections.map(s => targetKey(s.projectId ?? '', s.path))));
     try {
       if (mode === 'debug') {
         for (const sel of selections) {
@@ -489,7 +489,7 @@ export class TestExplorer implements vscode.Disposable {
         try { await handle.done; } finally { sub.dispose(); }
       }
       this.deps.store.flush();
-      if (mode === 'coverage') this.publishCoverage(run, paths);
+      if (mode === 'coverage') this.publishCoverage(run, selections);
     } catch (err) {
       const text = err instanceof Error ? err.stack ?? err.message : String(err);
       this.deps.log.error(`testTree: ${mode} failed: ${text}`);
@@ -507,15 +507,17 @@ export class TestExplorer implements vscode.Disposable {
   }
 
   /** `run.addCoverage()` for every source the run's test files touched. */
-  private publishCoverage(run: vscode.TestRun, testPaths: Set<string>): void {
+  private publishCoverage(run: vscode.TestRun, selections: RunTestSelection[]): void {
     const store = this.deps.store;
     const sources = new Set<string>();
-    for (const p of testPaths) {
-      for (const s of store.coveredSourcesOf(p)) sources.add(s);
-      if (store.coverageFor(p)?.meta) sources.add(p);
+    const projects = [...new Set(selections.flatMap(s => s.projectId ? [s.projectId] : []))];
+    const targets = new Set(selections.map(s => targetKey(s.projectId ?? '', s.path)));
+    for (const selection of selections) {
+      for (const s of store.coveredSourcesOf(selection.path, selection.projectId)) sources.add(s);
+      if (store.coverageFor(selection.path, selection.projectId)?.meta) sources.add(selection.path);
     }
     for (const source of sources) {
-      const cov = store.coverageFor(source);
+      const cov = store.coverageFor(source, projects);
       if (!cov?.meta) continue;
       const total = cov.meta.stmtStartLine.length;
       let hit = 0;
@@ -525,23 +527,26 @@ export class TestExplorer implements vscode.Disposable {
       for (let i = 0; i + 2 < cov.meta.branchArms.length; i += 3) if (cov.branchArmHitByFile.has(`${cov.meta.branchArms[i]}:${cov.meta.branchArms[i + 1]}`)) armHit++;
       const includes: vscode.TestItem[] = [];
       for (const key of store.execBy().get(source) ?? []) {
-        if (!testPaths.has(parseTestKey(key).path)) continue;
+        const test = parseTestKey(key);
+        if (!targets.has(targetKey(test.projectId ?? '', test.path))) continue;
         const item = this.itemForTestKey(key);
         if (item) includes.push(item);
       }
-      run.addCoverage(new vscode.FileCoverage(
+      const published = new vscode.FileCoverage(
         vscode.Uri.file(source),
         new vscode.TestCoverageCount(hit, total),
         armTotal > 0 ? new vscode.TestCoverageCount(armHit, armTotal) : undefined,
         undefined,
         includes.length > 0 ? includes : undefined,
-      ));
+      );
+      this.publishedCoverage.set(published, cov);
+      run.addCoverage(published);
     }
   }
 
   /** Statement/branch details for the Coverage view; `item` narrows to that test's hits. */
   loadDetailedCoverage(fileCoverage: vscode.FileCoverage, item: vscode.TestItem | undefined): vscode.FileCoverageDetail[] {
-    const cov = this.deps.store.coverageFor(fileCoverage.uri.fsPath);
+    const cov = this.publishedCoverage.get(fileCoverage) ?? this.deps.store.coverageFor(fileCoverage.uri.fsPath, item ? this.projectIdFor(item) : undefined);
     if (!cov?.meta) return [];
     const keys = item ? new Set(this.testKeysFor(item)) : undefined;
     const meta = cov.meta;
@@ -592,7 +597,7 @@ export class TestExplorer implements vscode.Disposable {
   }
 
   private ensureFile(projectId: string, filePath: string): FileEntry {
-    let entry = this.files.get(filePath);
+    let entry = this.files.get(targetKey(projectId, filePath));
     if (entry) return entry;
     let project = this.projects.get(projectId);
     if (!project) {
@@ -608,7 +613,7 @@ export class TestExplorer implements vscode.Disposable {
     item.canResolveChildren = true;
     item.sortText = relPath;
     entry = { projectId, path: filePath, relPath, item, nodeItems: new Map(), keyItems: new Map(), nameItems: new Map(), runtimeItems: new Map(), notMatched: false, invalidated: false };
-    this.files.set(filePath, entry);
+    this.files.set(targetKey(projectId, filePath), entry);
     project.item.children.add(item);
     return entry;
   }
@@ -741,7 +746,7 @@ export class LiveRunPublisher implements vscode.Disposable {
   constructor(
     private readonly controller: vscode.TestController,
     private readonly store: ResultStore,
-    private readonly explorer: Pick<TestExplorer, 'fileEntry'>,
+    private readonly explorer: Pick<TestExplorer, 'fileEntries'>,
     opts: LiveRunPublisherOptions,
   ) {
     this.idleMs = opts.idleMs ?? 500;
@@ -764,11 +769,10 @@ export class LiveRunPublisher implements vscode.Disposable {
 
   publish(paths: readonly string[]): void {
     let any = false;
-    for (const p of paths) {
-      const entry = this.explorer.fileEntry(p);
-      const file = this.store.fileRecord(p);
-      if (!entry || !file) continue;
-      const target = this.explicit.find(e => e.paths?.has(p)) ?? this.ensureLive(entry.item);
+    for (const p of paths) for (const entry of this.explorer.fileEntries(p)) {
+      const file = this.store.fileRecord(p, entry.projectId);
+      if (!file) continue;
+      const target = this.explicit.find(e => e.paths?.has(targetKey(entry.projectId, p)) || e.paths?.has(p)) ?? this.ensureLive(entry.item);
       this.publishFile(target, file, entry);
       any = true;
     }
@@ -783,7 +787,7 @@ export class LiveRunPublisher implements vscode.Disposable {
       return true;
     };
     if (file.status === 'queued' || file.status === 'running') {
-      const started = new Set(file.status === 'running' ? this.store.started(file.path).map(s => s.fullName) : []);
+      const started = new Set(file.status === 'running' ? this.store.started(file.path, entry.projectId).map(s => s.fullName) : []);
       const nameOf = new Map<vscode.TestItem, string>();
       for (const [name, items] of entry.nameItems) for (const it of items) nameOf.set(it, name);
       const visit = (item: vscode.TestItem) => {
@@ -794,7 +798,7 @@ export class LiveRunPublisher implements vscode.Disposable {
       };
       visit(entry.item);
     }
-    for (const record of this.store.testsInFile(file.path)) {
+    for (const record of this.store.testsInFile(file.path, entry.projectId)) {
       const item = entry.keyItems.get(record.testKey);
       if (!item) continue;
       const sig = `${record.status}|${record.lastRunId}|${record.stale ? 1 : 0}`;

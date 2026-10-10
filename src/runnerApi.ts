@@ -55,7 +55,7 @@ export interface CancellationLike {
 export interface RunnerApi {
   /** Runs whole files or named tests within them. */
   runFiles(selections: RunTestSelection[], reason: RunReason, opts?: RunOptions): Promise<RunHandle>;
-  /** Runs specific tests by store key (`path\0fullName\0dupIndex`). */
+  /** Runs specific tests by host store key (`path\0fullName\0dupIndex\0projectId`). */
   runTests(testKeys: string[], reason?: RunReason, opts?: RunOptions): Promise<RunHandle>;
   /** Starts a js-debug session for one file / named test; resolves when the session ends. */
   debug(selection: RunTestSelection): Promise<void>;

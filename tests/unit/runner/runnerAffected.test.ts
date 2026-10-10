@@ -81,6 +81,10 @@ function setup(overrides: Partial<HyperJestSettings> = {}) {
   const registry = {
     onDidChange: (l: (e: any) => void) => { registryListener = l; return { dispose() { /* noop */ } }; },
     projectIdFor,
+    projectsFor: (p: string) => { const id = projectIdFor(p); return id ? [entries.get(id)] : []; },
+    resolveMatchers: jest.fn(async () => ({})),
+    acceptsTest: (_id: string, p: string) => testFile.isTest(p),
+    monitorsSource: () => true,
     get: (id: string) => entries.get(id),
     projectFor: (p: string) => { const id = projectIdFor(p); return id ? entries.get(id) : undefined; },
     all: () => [...entries.values()],
@@ -268,7 +272,7 @@ describe('RunCoordinator readiness and documents', () => {
     const U = '/repo/pkg/a.unit.js';
     __state.textDocuments.push(makeDocument(U, TEXT));
     await runner.start();
-    expect(registry.ensureReady).toHaveBeenCalledWith(P1);
+    expect(registry.resolveMatchers).toHaveBeenCalledWith(P1);
     await tick();
     expect(w1.runs()).toHaveLength(0);
     testFile.isTest = p => p === U;

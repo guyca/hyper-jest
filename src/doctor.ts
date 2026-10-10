@@ -31,6 +31,8 @@ export function buildDoctorReport(registry: ProjectRegistry, pool: WorkerPool, s
       status: spec.status,
       reason: spec.reason,
       configArg: spec.configArg,
+      configFile: spec.configFile,
+      selected: spec.selected !== false,
       jestVersion: spec.jestVersion,
       jestPkgDir: spec.jestPkgDir,
       nodePath: spec.nodePath,
