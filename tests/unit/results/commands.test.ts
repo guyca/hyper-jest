@@ -224,12 +224,12 @@ describe('Select Configurations', () => {
     expect(t.updates).toEqual([['projects', [{ packageDir: '/repo/pkg', configFiles: [] }]]]);
   });
 
-  it('selects shono without converting it into an environment-losing configArg pin', async () => {
-    const shono = { spec: spec('shono', '/repo/pkg', '/repo/shono/jestConfig.js', 'shono') };
-    const t = setup({ entries: [unit, shono] });
-    v.window.showQuickPick.mockImplementation(async (items: any[]) => items.filter(i => i.spec.id === 'shono'));
+  it('selects a script config without converting it into an environment-losing configArg pin', async () => {
+    const custom = { spec: spec('custom', '/repo/pkg', '/repo/config/jest.config.js', 'script-config') };
+    const t = setup({ entries: [unit, custom] });
+    v.window.showQuickPick.mockImplementation(async (items: any[]) => items.filter(i => i.spec.id === 'custom'));
     await run('hyperjest.selectConfigurations');
-    expect(t.updates).toEqual([['projects', [{ packageDir: '/repo/pkg', configFiles: ['../shono/jestConfig.js'] }]]]);
+    expect(t.updates).toEqual([['projects', [{ packageDir: '/repo/pkg', configFiles: ['../config/jest.config.js'] }]]]);
   });
 
   it('matches relative and absolute override dirs', () => {

@@ -11,7 +11,7 @@ import { summarizeConfig } from '../worker/configSummary';
 import type { Logger } from '../core/logger';
 import type { HyperJestSettings } from '../core/settingsModel';
 import { discoverProjectsAsync, type DiscoveryResult, type SkippedPackage } from '../core/projectSpec';
-import { applyCliFilters, createMatcher, JEST_CONFIG_EXT_ORDER, jestDefaultsFor, shonoProjectConfigs, type TestFileMatcher } from '../core/testFileMatcher';
+import { applyCliFilters, createMatcher, JEST_CONFIG_EXT_ORDER, jestDefaultsFor, type TestFileMatcher } from '../core/testFileMatcher';
 import { jestMajor } from '../core/jestResolver';
 import { isUnder, normalizePath } from '../core/paths';
 import type { InitErrorMsg, ProjectSpec, ReadyMsg, ResolvedConfigSummary, WorkerFlags } from '../core/protocol';
@@ -447,12 +447,9 @@ export class ProjectRegistry implements vscode.Disposable {
     }, spec, major));
   }
 
-  /** Matchers before the worker has reported: Jest defaults per major, or shono's three projects. */
+  /** Matchers before the worker has reported: Jest defaults per major. */
   private staticMatchers(spec: ProjectSpec): TestFileMatcher[] {
     const major = jestMajor(spec.jestVersion ?? '29.0.0');
-    if (spec.flavor === 'shono') {
-      return shonoProjectConfigs(spec.packageDir, {}).map(c => filteredMatcher(c, spec, major));
-    }
     const d = jestDefaultsFor(major);
     return [filteredMatcher({ rootDir: spec.packageDir, testMatch: d.testMatch, testPathIgnorePatterns: d.testPathIgnorePatterns }, spec, major)];
   }

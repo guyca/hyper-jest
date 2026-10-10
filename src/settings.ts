@@ -66,7 +66,6 @@ export function readSettings(cfg: { get<T>(key: string, defaultValue: T): T }): 
       e2ePatterns: g('discovery.e2ePatterns', d.discovery.e2ePatterns),
       preferScriptConfigs: g('discovery.preferScriptConfigs', d.discovery.preferScriptConfigs),
     },
-    shono: { enabled: g('shono.enabled', d.shono.enabled) },
     globalSetup: g('globalSetup', d.globalSetup),
     tsJest: { diagnostics: g('tsJest.diagnostics', d.tsJest.diagnostics) },
     coverage: {

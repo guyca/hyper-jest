@@ -6,10 +6,10 @@
  *      (unless a workspace folder lives inside) and `hyperjest.discovery.exclude` are dropped here too;
  *   2. repo root = nearest ancestor package.json with `workspaces`; package dir PK = the package.json dir,
  *      and PK is the cwd for everything;
- *   3. a package is a Jest package when its deps include `jest`, a script invokes `jest` / `shono testjs`,
- *      or a `jest.config.*` / package.json `jest` key exists; `node --test` / mocha / wdio / detox are notJest;
+ *   3. a package is a Jest package when its deps include `jest`, a script invokes `jest`,
+ *      or a `jest.config.*` / package.json `jest` key exists; `node --test` / mocha / wdio are notJest;
  *   4. selection: disabled > explicit configFiles > legacy configArg > native default > primary script;
- *   5. `jest` resolved by chain (shono: from the shono-testjs dir first), never `.bin`; missing -> unavailable,
+ *   5. `jest` resolved by chain from the package, never `.bin`; missing -> unavailable,
  *      < 29 -> unsupported;
  *   6. node picked by nodeResolver; warnings carry every fallback and incompatibility.
  *
@@ -27,10 +27,9 @@ import {
 } from './paths';
 import type { ProjectFlavor, ProjectSpec, ProjectStatus } from './protocol';
 import {
-  CommandInfo, NON_JEST_TEST_RUNNERS, Runner, allCommands, commandPriority, isE2eScriptName, isShonoConfigPath, nodeOptionsToArgs, sniffScripts,
+  CommandInfo, NON_JEST_TEST_RUNNERS, Runner, allCommands, commandPriority, isE2eScriptName, nodeOptionsToArgs, sniffScripts,
 } from './scriptSniffer';
 import type { HyperJestSettings, ProjectOverride } from './settingsModel';
-import { ShonoChain, resolveShonoChain } from './shono';
 import { jestConfigExtOrderFor } from './testFileMatcher';
 
 // ---------------------------------------------------------------------------------------------
@@ -44,7 +43,7 @@ export interface DiscoveryInput {
   settings: HyperJestSettings;
   homeDir: string;
   platform: NodeJS.Platform;
-  /** Host process environment (read-only: PATH for node lookup, NODE_PATH for the shono merge, FNM_DIR...). */
+  /** Host process environment (read-only: PATH for node lookup, FNM_DIR...). */
   env?: Record<string, string | undefined>;
   /** Open workspace folders. A `.claude/worktrees/*` package survives only when a workspace folder is inside that worktree. */
   workspaceFolders?: string[];
@@ -78,8 +77,6 @@ export interface PackageDiscovery {
   repoRoot?: string;
   specs: ProjectSpec[];
   skipped?: SkippedPackage;
-  /** Resolved shono chain when the package is a shono package (for Doctor / logs). */
-  shono?: ShonoChain;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -233,8 +230,8 @@ interface Candidate {
 }
 
 const NESTED_SCAN_SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', 'ios', 'android', 'Pods', 'lib', 'out', '.yarn', '.claude']);
-/** Dependencies that identify a non-Jest test stack when no script runs Jest (mocha, WebdriverIO/Appium incl. Wix wrappers, detox, vitest, ...). */
-const NON_JEST_DEP_PATTERN = /^(mocha|@wdio\/.+|webdriverio|@wix-pilot\/webdriverio.*|@wix\/applot|appium|vitest|detox|@playwright\/test|cypress|ava|tap)$/;
+/** Dependencies that identify a non-Jest test stack when no script runs Jest (mocha, WebdriverIO/Appium, vitest, ...). */
+const NON_JEST_DEP_PATTERN = /^(mocha|@wdio\/.+|webdriverio|appium|vitest|@playwright\/test|cypress|ava|tap)$/;
 
 /** Discover one package.json. Exported for Doctor-style per-package reports. */
 export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | DiscoveryInput): PackageDiscovery {
@@ -265,8 +262,6 @@ export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | Disco
   const scripts = sniffScripts(pkg.scripts);
   const cmds = allCommands(scripts);
   const jestCmds = cmds.filter(c => c.runner === 'jest');
-  const shonoCmds = cmds.filter(c => c.runner === 'shono-testjs' || (c.runner === 'jest' && isShonoConfigPath(c.jest?.configArg)));
-  const plainJestCmds = jestCmds.filter(c => !isShonoConfigPath(c.jest?.configArg));
   const nonJestCmds = cmds.filter(c => (NON_JEST_TEST_RUNNERS as readonly Runner[]).includes(c.runner));
   const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
   const hasJestDep = Object.prototype.hasOwnProperty.call(deps, 'jest');
@@ -275,7 +270,7 @@ export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | Disco
   const implicitHere = implicitConfigCandidates(packageDir, fs, jestMajorHint, pkg);
   const hasConfig = implicitHere.candidates.length > 0;
   const hyperFiles = findHyperConfigs(packageDir, fs, p => ctx.isExcluded(workspaceRelativePosix(p, ctx.workspaceFolders)));
-  const hasJestEvidence = hasJestDep || plainJestCmds.length > 0 || shonoCmds.length > 0 || hasConfig || hyperFiles.length > 0 || !!override?.configArg || !!override?.configFiles?.length;
+  const hasJestEvidence = hasJestDep || jestCmds.length > 0 || hasConfig || hyperFiles.length > 0 || !!override?.configArg || !!override?.configFiles?.length;
 
   if (!hasJestEvidence) {
     if (nonJestCmds.length || nonJestDeps.length) {
@@ -286,14 +281,14 @@ export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | Disco
     return skip('noTests', 'no jest dependency, script, config or jest key');
   }
   // Scripts are the source of truth: when every test script runs a non-Jest runner, a jest dependency or a
-  // (possibly empty) jest key / config is vestigial (engine mobile-apps-generate-module-manifest: `jest: {}` + `node tests/*.test.js`).
-  if (nonJestCmds.length && !plainJestCmds.length && !shonoCmds.length && !override?.configArg && !override?.configFiles?.length && !hyperFiles.length) {
+  // (possibly empty) jest key / config is vestigial (for example `jest: {}` alongside `node tests/*.test.js`).
+  if (nonJestCmds.length && !jestCmds.length && !override?.configArg && !override?.configFiles?.length && !hyperFiles.length) {
     const c = nonJestCmds[0];
     const unused = hasConfig ? `; unused Jest config: ${implicitHere.candidates.map(p => path.relative(packageDir, p)).join(', ')}` : '';
     const reason = `tests run with ${c.runner} (script "${c.script}": ${c.bin})${unused}`;
     return { packageDir, repoRoot, specs: [finalize({ flavor: 'implicit', cliFilters: emptyFilters(), env: {}, nodeArgs: [], jestStartDirs: [packageDir], warnings: [], status: 'notJest', reason }, pkg, baseName, packageDir, repoRoot, override, ctx)] };
   }
-  const depsOnly = hasJestDep && !plainJestCmds.length && !shonoCmds.length && !hasConfig && !override?.configArg && !override?.configFiles?.length && !hyperFiles.length;
+  const depsOnly = hasJestDep && !jestCmds.length && !hasConfig && !override?.configArg && !override?.configFiles?.length && !hyperFiles.length;
   if (depsOnly && hasWorkspaces(pkg)) return skip('workspaceRoot', 'jest is only a dependency of the workspace root; tests run per package');
   if (depsOnly && (nonJestCmds.length || nonJestDeps.length)) {
     const c = nonJestCmds[0];
@@ -305,68 +300,37 @@ export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | Disco
   const packageWarnings: string[] = [];
   const candidates: Candidate[] = [];
   const rank = (c: Candidate) => (c.priority ?? 100) * (cmds.length + 1) + (c.primaryCommand ? cmds.indexOf(c.primaryCommand) : cmds.length);
-  let shono: ShonoChain | undefined;
 
   {
-    const shonoWanted = settings.shono.enabled && shonoCmds.length > 0;
-    const scriptConfigCmds = plainJestCmds.filter(c => c.jest?.configArg);
-    const implicitCmds = plainJestCmds.filter(c => !c.jest?.configArg);
+    const scriptConfigCmds = jestCmds.filter(c => c.jest?.configArg);
+    const implicitCmds = jestCmds.filter(c => !c.jest?.configArg);
 
-    if (shonoWanted) {
-      const r = resolveShonoChain({ packageDir, pkg, existingNodePath: ctx.env.NODE_PATH, resolve: ctx.resolve, fs });
-      const primary = pickPrimary(shonoCmds);
-      if (r.ok) {
-        shono = r.chain;
-        const filters = emptyFilters();
-        if (primary?.shono?.fileName) filters.testPathPatterns.push(primary.shono.fileName);
-        if (primary?.jest) {
-          filters.testPathIgnorePatterns.push(...primary.jest.testPathIgnorePatterns);
-          filters.testPathPatterns.push(...primary.jest.testPathPatterns);
-        }
-        const env = { ...r.chain.env };
-        const nodeArgs = [...r.chain.nodeArgs];
-        if (primary) mergeCommandEnv(primary, env, nodeArgs, ctx.env);
-        candidates.push({ flavor: 'shono', configArg: r.chain.configArg, cliFilters: filters, env, nodeArgs, jestStartDirs: r.chain.jestStartDirs, primaryCommand: primary, priority: primary ? commandPriority(primary) : 0, displaySuffix: 'shono', warnings: [...r.chain.warnings] });
-      } else {
-        candidates.push({ flavor: 'shono', cliFilters: emptyFilters(), env: {}, nodeArgs: [], jestStartDirs: [packageDir], warnings: [], status: 'unavailable', reason: r.error, displaySuffix: 'shono' });
-      }
-      if (hasConfig) packageWarnings.push(`Implicit Jest config ignored (${implicitHere.candidates.map(c => path.relative(packageDir, c)).join(', ')}): scripts run \`shono testjs\``);
-      const alternatives = new Map<string, CommandInfo[]>();
-      for (const cmd of scriptConfigCmds) {
-        const configArg = path.resolve(packageDir, cmd.jest!.configArg!);
-        alternatives.set(configArg, [...(alternatives.get(configArg) ?? []), cmd]);
-      }
-      for (const [configArg, commands] of alternatives) candidates.push(scriptConfigCandidate(configArg, pickPrimary(commands)!, commands, packageDir, ctx));
-      if (implicitCmds.length) candidates.push(implicitCandidate(implicitHere, implicitCmds, packageDir, ctx));
-    } else {
-      if (shonoCmds.length && !settings.shono.enabled) packageWarnings.push('Scripts run `shono testjs` but hyperjest.shono.enabled is false');
-      const byConfig = new Map<string, CommandInfo[]>();
-      for (const c of scriptConfigCmds) {
-        const abs = path.resolve(packageDir, c.jest!.configArg!);
-        const list = byConfig.get(abs) ?? [];
-        list.push(c);
-        byConfig.set(abs, list);
-      }
-      for (const [configArg, list] of byConfig) {
-        const primary = pickPrimary(list)!;
-        const c = scriptConfigCandidate(configArg, primary, list, packageDir, ctx);
-        candidates.push(c);
-      }
-      if (implicitCmds.length || !scriptConfigCmds.length) {
-        candidates.push(implicitCandidate(implicitHere, implicitCmds, packageDir, ctx));
-      } else if (hasConfig) {
-        packageWarnings.push(`Implicit Jest config ${implicitHere.candidates.map(c => path.relative(packageDir, c)).join(', ')} is not used by any test script; using the script configs`);
-      }
+    const byConfig = new Map<string, CommandInfo[]>();
+    for (const c of scriptConfigCmds) {
+      const abs = path.resolve(packageDir, c.jest!.configArg!);
+      const list = byConfig.get(abs) ?? [];
+      list.push(c);
+      byConfig.set(abs, list);
+    }
+    for (const [configArg, list] of byConfig) {
+      const primary = pickPrimary(list)!;
+      const c = scriptConfigCandidate(configArg, primary, list, packageDir, ctx);
+      candidates.push(c);
+    }
+    if (implicitCmds.length || !scriptConfigCmds.length) {
+      candidates.push(implicitCandidate(implicitHere, implicitCmds, packageDir, ctx));
+    } else if (hasConfig) {
+      packageWarnings.push(`Implicit Jest config ${implicitHere.candidates.map(c => path.relative(packageDir, c)).join(', ')} is not used by any test script; using the script configs`);
     }
   }
 
-  // Nested configs below the package (e.g. wix-one-app-engine/e2e/jest.config.js) that belong to no sub-package.
+  // Nested configs below the package (e.g. tools/e2e/jest.config.js) that belong to no sub-package.
   if (ctx.nestedConfigDepth > 0) {
     const taken = new Set(candidates.map(c => c.configArg).filter((x): x is string => !!x));
     for (const nested of findNestedConfigs(packageDir, ctx.nestedConfigDepth, fs, jestMajorHint)) {
       if (taken.has(nested)) continue;
       const rel = toPosix(path.relative(packageDir, nested));
-      const e2e = isE2eConfig(nested, rel, ctx);
+      const e2e = isE2eConfig(rel, ctx);
       candidates.push({
         flavor: 'implicit',
         configArg: nested,
@@ -388,7 +352,7 @@ export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | Disco
   for (const file of [...implicitHere.candidates, ...fs.readdir(packageDir).filter(n => /^jest\..+\.config\.[cm]?[jt]s$/.test(n)).map(n => path.join(packageDir, n))]) {
     const key = toPosix(path.relative(packageDir, file));
     if (takenKeys.has(key)) continue;
-    const e2e = isE2eConfig(file, key, ctx);
+    const e2e = isE2eConfig(key, ctx);
     candidates.push({ flavor: 'implicit', configArg: file, configKey: key, cliFilters: emptyFilters(), env: {}, nodeArgs: [], jestStartDirs: [packageDir], displaySuffix: key, warnings: [],
       ...(e2e ? { status: 'notJest', reason: `e2e config (${e2e})` } : {}) });
     takenKeys.add(key);
@@ -398,10 +362,9 @@ export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | Disco
     const config = loaded?.config;
     const baseDir = path.dirname(file.file);
     const configArg = config?.jestConfig ? path.resolve(baseDir, config.jestConfig) : undefined;
-    const base = candidates.find(c => c.flavor === 'shono' && (c.configArg === configArg || isShonoConfigPath(configArg)));
     candidates.push({ flavor: 'hyperjest', configFile: file.file, configKey: toPosix(path.relative(packageDir, file.file)),
-      configArg, cliFilters: emptyFilters(), env: { ...(base?.env ?? {}), ...(config?.env ?? {}) },
-      nodeArgs: [...(base?.nodeArgs ?? []), ...(config?.nodeArgs ?? [])], jestStartDirs: base?.jestStartDirs ?? [packageDir],
+      configArg, cliFilters: emptyFilters(), env: { ...(config?.env ?? {}) },
+      nodeArgs: [...(config?.nodeArgs ?? [])], jestStartDirs: [packageDir],
       displaySuffix: toPosix(path.relative(packageDir, file.file)), warnings: [], scope: { baseDir, tests: config?.tests, files: config?.files },
       ...(!config ? { status: 'unavailable', reason: loaded?.error ?? 'HyperJest configuration has not been loaded' }
         : configArg && !fs.isFile(configArg) ? { status: 'unavailable', reason: `Missing Jest config: ${configArg}` } : {}) });
@@ -441,7 +404,7 @@ export function discoverPackage(packageJsonPath: string, ctxOrInput: Ctx | Disco
   }
 
   const specs = candidates.map(c => finalize({ ...c, warnings: [...packageWarnings, ...c.warnings] }, pkg, baseName, packageDir, repoRoot, override, ctx));
-  return { packageDir, repoRoot, specs, shono };
+  return { packageDir, repoRoot, specs };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -494,7 +457,7 @@ function scriptConfigCandidate(configArg: string, primary: CommandInfo, all: Com
   const nodeArgs: string[] = [];
   mergeCommandEnv(primary, env, nodeArgs, ctx.env);
   const c: Candidate = { flavor: 'script-config', configArg, cliFilters: filters, env, nodeArgs, jestStartDirs: [packageDir], primaryCommand: primary, priority: commandPriority(primary), displaySuffix: rel, warnings: [] };
-  const e2e = isE2eConfig(configArg, rel, ctx) ?? (all.every(x => isE2eScriptName(x.script) || x.via.some(isE2eScriptName)) ? 'e2e script' : undefined);
+  const e2e = isE2eConfig(rel, ctx) ?? (all.every(x => isE2eScriptName(x.script) || x.via.some(isE2eScriptName)) ? 'e2e script' : undefined);
   if (e2e) {
     c.status = 'notJest';
     c.reason = `e2e config (${e2e}) — excluded from unit runs`;
@@ -576,13 +539,9 @@ export function findNestedConfigs(packageDir: string, depth: number, fs: FsView,
   return out;
 }
 
-/** Why a config is e2e (pattern or detox marker), or undefined when it is a unit config. */
-function isE2eConfig(configPath: string, relPosix: string, ctx: Ctx): string | undefined {
-  if (ctx.isE2ePath(relPosix)) return `matches hyperjest.discovery.e2ePatterns`;
-  const text = ctx.fs.readFile(configPath);
-  // Only structural markers count (a unit config that merely ignores `/e2e/` or mentions detox in a comment must stay a unit config).
-  if (text && /detox-wix-preset|require\('[^']*detox[^']*'\)|require\("[^"]*detox[^"]*"\)|from\s+['"][^'"]*detox|testEnvironment\s*:\s*['"][^'"]*detox|preset\s*:\s*['"][^'"]*detox|['"]detox\/runners/i.test(text)) return 'detox';
-  return undefined;
+/** Whether a config path matches the user-configurable E2E exclusions. */
+function isE2eConfig(relPosix: string, ctx: Ctx): string | undefined {
+  return ctx.isE2ePath(relPosix) ? 'matches hyperjest.discovery.e2ePatterns' : undefined;
 }
 
 // ---------------------------------------------------------------------------------------------

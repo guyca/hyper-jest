@@ -3,7 +3,6 @@ import { buildProjectSpecs, computeSpecId, discoverProjects, discoverProjectsAsy
 import type { ProjectSpec } from '../../../src/core/protocol';
 import { DEFAULT_SETTINGS, HyperJestSettings } from '../../../src/core/settingsModel';
 import { createFakeExec, createMemFs, pkgJson, type MemFs } from './memFs';
-import { engineFs, mobileModulesFs } from './shono.test';
 
 const HOME = '/home/u';
 const fnm = (v: string) => `${HOME}/.local/share/fnm/node-versions/v${v}/installation/bin/node`;
@@ -33,35 +32,35 @@ function run(fs: MemFs, packageJsonPaths: string[], settings: Partial<HyperJestS
 const allPkgJsons = (fs: MemFs) => [...fs.files.keys()].filter(p => p.endsWith('/package.json') && !p.includes('/node_modules/'));
 const by = (specs: ProjectSpec[], dir: string, pred: (s: ProjectSpec) => boolean = () => true) => specs.find(s => s.packageDir === dir && pred(s));
 
-const relopsFs = () =>
+const workspaceFs = () =>
   createMemFs({
-    '/w/relops/package.json': pkgJson({ name: 'relops', workspaces: ['packages/*', 'plugins/*'], scripts: { test: 'yarn workspaces foreach --all run test' } }),
-    '/w/relops/.nvmrc': '24.19.0',
-    '/w/relops/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
-    '/w/relops/node_modules/jest/bin/jest.js': '',
-    '/w/relops/packages/agent/package.json': pkgJson({ name: 'agent', scripts: { test: 'jest --testPathIgnorePatterns=tests/integration', 'test:integration': 'jest --config jest.integration.config.js', 'test:coverage': 'jest --coverage --testPathIgnorePatterns=tests/integration' }, devDependencies: { jest: '^29.7.0' } }),
-    '/w/relops/packages/agent/jest.config.js': 'module.exports = {}',
-    '/w/relops/packages/agent/jest.integration.config.js': 'module.exports = {}',
-    '/w/relops/packages/agent/tests/unit/a.test.ts': '',
-    '/w/relops/plugins/shots/package.json': pkgJson({ name: 'shots', scripts: { test: 'node --test' } }),
-    '/w/relops/packages/empty/package.json': pkgJson({ name: 'empty', scripts: { build: 'tsc' } }),
-    '/w/relops/packages/legacy/pkg/package.json': pkgJson({ name: 'legacy', scripts: { test: 'jest' } }),
-    '/w/relops/.claude/worktrees/wt1/package.json': pkgJson({ name: 'relops', workspaces: ['packages/*'] }),
-    '/w/relops/.claude/worktrees/wt1/.nvmrc': '24.19.0',
-    '/w/relops/.claude/worktrees/wt1/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
-    '/w/relops/.claude/worktrees/wt1/node_modules/jest/bin/jest.js': '',
-    '/w/relops/.claude/worktrees/wt1/packages/agent/package.json': pkgJson({ name: 'agent', scripts: { test: 'jest' }, devDependencies: { jest: '^29.7.0' } }),
+    '/w/workspace/package.json': pkgJson({ name: 'workspace', workspaces: ['packages/*', 'plugins/*'], scripts: { test: 'yarn workspaces foreach --all run test' } }),
+    '/w/workspace/.nvmrc': '24.19.0',
+    '/w/workspace/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
+    '/w/workspace/node_modules/jest/bin/jest.js': '',
+    '/w/workspace/packages/agent/package.json': pkgJson({ name: 'agent', scripts: { test: 'jest --testPathIgnorePatterns=tests/integration', 'test:integration': 'jest --config jest.integration.config.js', 'test:coverage': 'jest --coverage --testPathIgnorePatterns=tests/integration' }, devDependencies: { jest: '^29.7.0' } }),
+    '/w/workspace/packages/agent/jest.config.js': 'module.exports = {}',
+    '/w/workspace/packages/agent/jest.integration.config.js': 'module.exports = {}',
+    '/w/workspace/packages/agent/tests/unit/a.test.ts': '',
+    '/w/workspace/plugins/shots/package.json': pkgJson({ name: 'shots', scripts: { test: 'node --test' } }),
+    '/w/workspace/packages/empty/package.json': pkgJson({ name: 'empty', scripts: { build: 'tsc' } }),
+    '/w/workspace/packages/legacy/pkg/package.json': pkgJson({ name: 'legacy', scripts: { test: 'jest' } }),
+    '/w/workspace/.claude/worktrees/wt1/package.json': pkgJson({ name: 'workspace', workspaces: ['packages/*'] }),
+    '/w/workspace/.claude/worktrees/wt1/.nvmrc': '24.19.0',
+    '/w/workspace/.claude/worktrees/wt1/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
+    '/w/workspace/.claude/worktrees/wt1/node_modules/jest/bin/jest.js': '',
+    '/w/workspace/.claude/worktrees/wt1/packages/agent/package.json': pkgJson({ name: 'agent', scripts: { test: 'jest' }, devDependencies: { jest: '^29.7.0' } }),
   });
 
-describe('discoverProjects: relops-like repo', () => {
+describe('discoverProjects: workspace with multiple test scripts', () => {
   it('yields an implicit spec with CLI filters plus a script-config spec, skips worktrees and non-jest packages', () => {
-    const fs = relopsFs();
-    const { specs, skipped } = run(fs, allPkgJsons(fs), {}, { workspaceFolders: ['/w/relops'] });
-    const agent = '/w/relops/packages/agent';
+    const fs = workspaceFs();
+    const { specs, skipped } = run(fs, allPkgJsons(fs), {}, { workspaceFolders: ['/w/workspace'] });
+    const agent = '/w/workspace/packages/agent';
     const impl = by(specs, agent, s => s.flavor === 'implicit')!;
     expect(impl).toMatchObject({
-      displayName: 'agent', repoRoot: '/w/relops', status: 'ok', jestPkgDir: '/w/relops/node_modules/jest', jestVersion: '29.7.0',
-      jestBinPath: '/w/relops/node_modules/jest/bin/jest.js', nodePath: fnm('24.19.0'), nodeVersion: 'v24.19.0', nodeArgs: [], env: {},
+      displayName: 'agent', repoRoot: '/w/workspace', status: 'ok', jestPkgDir: '/w/workspace/node_modules/jest', jestVersion: '29.7.0',
+      jestBinPath: '/w/workspace/node_modules/jest/bin/jest.js', nodePath: fnm('24.19.0'), nodeVersion: 'v24.19.0', nodeArgs: [], env: {},
       cliFilters: { testPathIgnorePatterns: ['tests/integration'] }, e2ePatterns: DEFAULT_SETTINGS.discovery.e2ePatterns, warnings: [],
     });
     expect(impl.configArg).toBeUndefined();
@@ -69,78 +68,83 @@ describe('discoverProjects: relops-like repo', () => {
     const integ = by(specs, agent, s => s.flavor === 'script-config')!;
     expect(integ).toMatchObject({ displayName: 'agent · jest.integration.config.js', status: 'ok', configArg: `${agent}/jest.integration.config.js`, cliFilters: { testPathIgnorePatterns: [] } });
     expect(integ.id).not.toBe(impl.id);
-    expect(by(specs, '/w/relops/plugins/shots')).toMatchObject({ status: 'notJest', reason: expect.stringMatching(/node-test/) });
-    expect(by(specs, '/w/relops/packages/legacy/pkg')).toMatchObject({ status: 'ok', flavor: 'implicit' });
+    expect(by(specs, '/w/workspace/plugins/shots')).toMatchObject({ status: 'notJest', reason: expect.stringMatching(/node-test/) });
+    expect(by(specs, '/w/workspace/packages/legacy/pkg')).toMatchObject({ status: 'ok', flavor: 'implicit' });
     expect(specs.filter(s => s.packageDir.includes('/.claude/worktrees/'))).toEqual([]);
     expect(skipped.map(s => `${s.reason}:${s.packageDir}`).sort()).toEqual([
-      'noTests:/w/relops', 'noTests:/w/relops/packages/empty', 'worktree:/w/relops/.claude/worktrees/wt1', 'worktree:/w/relops/.claude/worktrees/wt1/packages/agent',
+      'noTests:/w/workspace', 'noTests:/w/workspace/packages/empty', 'worktree:/w/workspace/.claude/worktrees/wt1', 'worktree:/w/workspace/.claude/worktrees/wt1/packages/agent',
     ]);
     expect(buildProjectSpecs({ packageJsonPaths: allPkgJsons(fs), settings: DEFAULT_SETTINGS, homeDir: HOME, platform: 'darwin', fs: withMachine(fs), resolve: createFsResolveFn(withMachine(fs)), exec: createFakeExec(), env: { PATH: `${MULTISHELL}` } })).toHaveLength(specs.length);
   });
 
   it('keeps a worktree package when a workspace folder is opened inside the worktree, and applies exclude globs', () => {
-    const fs = relopsFs();
-    const wt = '/w/relops/.claude/worktrees/wt1';
+    const fs = workspaceFs();
+    const wt = '/w/workspace/.claude/worktrees/wt1';
     const r = run(fs, allPkgJsons(fs), { discovery: { ...DEFAULT_SETTINGS.discovery, exclude: ['**/legacy/**'] } }, { workspaceFolders: [wt] });
     expect(by(r.specs, `${wt}/packages/agent`)).toMatchObject({ status: 'ok', repoRoot: wt, nodeVersion: 'v24.19.0' });
-    expect(r.skipped.find(s => s.packageDir === '/w/relops/packages/legacy/pkg')?.reason).toBe('excluded');
+    expect(r.skipped.find(s => s.packageDir === '/w/workspace/packages/legacy/pkg')?.reason).toBe('excluded');
   });
 
   it('is deterministic', () => {
-    const fs = relopsFs();
+    const fs = workspaceFs();
     const a = run(fs, allPkgJsons(fs));
     const b = run(fs, [...allPkgJsons(fs)].reverse());
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
 
-const engineLikeFs = () => {
-  const fs = engineFs();
+const multiVersionFs = () => {
+  const fs = createMemFs({
+    '/eng/package.json': pkgJson({ workspaces: ['packages/*'] }),
+    '/eng/.nvmrc': '24.15.0',
+    '/eng/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '30.4.2' }),
+    '/eng/node_modules/jest/bin/jest.js': '',
+  });
   const add = (p: string, c: string) => fs.write(p, c);
-  add('/eng/packages/engine/package.json', pkgJson({ name: '@wix/engine', scripts: { test: ':', 'test:js': 'jest -c jest.unit.config.js && jest -c jest.integration.config.js ./integration', 'test:e2e:ios': 'node scripts/e2e.js' }, devDependencies: { jest: '^30.4.2' } }));
+  add('/eng/packages/engine/package.json', pkgJson({ name: '@example/engine', scripts: { test: ':', 'test:js': 'jest -c jest.unit.config.js && jest -c jest.integration.config.js ./integration', 'test:e2e:ios': 'node scripts/e2e.js' }, devDependencies: { jest: '^30.4.2' } }));
   add('/eng/packages/engine/jest.config.js', '// Runs both unit and integration tests. Used when running simply "jest", for example by wallaby');
   add('/eng/packages/engine/jest.unit.config.js', 'module.exports = {...require("./jest.config")}');
   add('/eng/packages/engine/jest.integration.config.js', 'module.exports = {...require("./jest.config")}');
-  add('/eng/packages/engine/e2e/jest.config.js', "const baseConfig = require('@wix/detox-wix-preset/dev/jest.config');\nmodule.exports = {...baseConfig};");
+  add('/eng/packages/engine/e2e/jest.config.js', "const baseConfig = require('@example/browser-preset/jest.config');\nmodule.exports = {...baseConfig};");
   add('/eng/packages/engine/src/a.test.js', '');
   add('/eng/packages/engine/node_modules/jest-circus/package.json', pkgJson({ name: 'jest-circus', version: '30.4.2' }));
-  add('/eng/packages/storage/package.json', pkgJson({ name: '@wix/storage', scripts: { test: 'jest' }, devDependencies: { jest: '^30' } }));
+  add('/eng/packages/storage/package.json', pkgJson({ name: '@example/storage', scripts: { test: 'jest' }, devDependencies: { jest: '^30' } }));
   add('/eng/packages/storage/jest.config.json', '{"roots":["src"]}');
-  add('/eng/packages/ci/package.json', pkgJson({ name: '@wix/ci', scripts: { test: 'jest --runInBand' }, devDependencies: { jest: '^30' } }));
+  add('/eng/packages/ci/package.json', pkgJson({ name: '@example/ci', scripts: { test: 'jest --runInBand' }, devDependencies: { jest: '^30' } }));
   add('/eng/packages/ci/jest.config.ts', 'export default {}');
-  add('/eng/packages/sl/package.json', pkgJson({ name: '@wix/sl', scripts: { test: 'jest --runInBand --forceExit' }, devDependencies: { jest: '^29.7.0' } }));
-  add('/eng/packages/sl/jest.config.js', "module.exports = require('@wix/serverless-jest-config')");
+  add('/eng/packages/sl/package.json', pkgJson({ name: '@example/sl', scripts: { test: 'jest --runInBand --forceExit' }, devDependencies: { jest: '^29.7.0' } }));
+  add('/eng/packages/sl/jest.config.js', "module.exports = require('@example/serverless-jest-config')");
   add('/eng/packages/sl/node_modules/jest/package.json', pkgJson({ name: 'jest', version: '29.7.0' }));
   add('/eng/packages/sl/node_modules/jest/bin/jest.js', '');
-  add('/eng/packages/gen/package.json', pkgJson({ name: '@wix/gen', jest: {}, scripts: { test: 'node tests/a.test.js && node tests/b.test.js' }, devDependencies: { jest: '*' } }));
-  add('/eng/packages/multi/package.json', pkgJson({ name: '@wix/multi', jest: { testMatch: ['x'] }, scripts: { test: 'jest --passWithNoTests' }, devDependencies: { jest: '^30' } }));
+  add('/eng/packages/gen/package.json', pkgJson({ name: '@example/gen', jest: {}, scripts: { test: 'node tests/a.test.js && node tests/b.test.js' }, devDependencies: { jest: '*' } }));
+  add('/eng/packages/multi/package.json', pkgJson({ name: '@example/multi', jest: { testMatch: ['x'] }, scripts: { test: 'jest --passWithNoTests' }, devDependencies: { jest: '^30' } }));
   add('/eng/packages/multi/jest.config.js', '');
-  add('/eng/packages/e2eonly/package.json', pkgJson({ name: '@wix/e2eonly', scripts: { 'test:e2e': 'jest -c detox/jest.config.js' }, devDependencies: { jest: '^30' } }));
-  add('/eng/packages/e2eonly/detox/jest.config.js', '');
-  add('/eng/packages/sub/package.json', pkgJson({ name: '@wix/sub', scripts: { test: 'jest' }, devDependencies: { jest: '^30' } }));
+  add('/eng/packages/e2eonly/package.json', pkgJson({ name: '@example/e2eonly', scripts: { 'test:e2e': 'jest -c e2e/jest.config.js' }, devDependencies: { jest: '^30' } }));
+  add('/eng/packages/e2eonly/e2e/jest.config.js', '');
+  add('/eng/packages/sub/package.json', pkgJson({ name: '@example/sub', scripts: { test: 'jest' }, devDependencies: { jest: '^30' } }));
   add('/eng/packages/sub/tools/jest.config.js', '');
   add('/eng/packages/sub/example/package.json', pkgJson({ name: 'example', scripts: { test: 'jest' }, devDependencies: { jest: '^30' } }));
   add('/eng/packages/sub/example/jest.config.js', '');
   return fs;
 };
 
-describe('discoverProjects: engine-like repo', () => {
-  const fs = engineLikeFs();
+describe('discoverProjects: workspace with multiple Jest versions', () => {
+  const fs = multiVersionFs();
   const { specs, skipped } = run(fs, allPkgJsons(fs));
   const eng = '/eng/packages/engine';
 
-  it('creates one spec per script config, flags the nested detox config and ignores the default jest.config.js', () => {
+  it('creates one spec per script config, flags the nested e2e config and ignores the default jest.config.js', () => {
     const mine = specs.filter(s => s.packageDir === eng);
     expect(mine.map(s => `${s.flavor}/${s.status}/${s.configArg?.replace(eng + '/', '')}`).sort()).toEqual([
       'implicit/notJest/e2e/jest.config.js', 'implicit/ok/jest.config.js', 'script-config/ok/jest.integration.config.js', 'script-config/ok/jest.unit.config.js',
     ]);
     const unit = by(specs, eng, s => s.configArg?.endsWith('jest.unit.config.js') ?? false)!;
-    expect(unit).toMatchObject({ displayName: '@wix/engine · jest.unit.config.js', jestVersion: '30.4.2', jestPkgDir: '/eng/node_modules/jest', nodeVersion: 'v24.15.0', cliFilters: { testPathIgnorePatterns: [] } });
+    expect(unit).toMatchObject({ displayName: '@example/engine · jest.unit.config.js', jestVersion: '30.4.2', jestPkgDir: '/eng/node_modules/jest', nodeVersion: 'v24.15.0', cliFilters: { testPathIgnorePatterns: [] } });
     expect(unit.warnings).toEqual([expect.stringMatching(/Implicit Jest config jest\.config\.js is not used by any test script/)]);
     const integ = by(specs, eng, s => s.configArg?.endsWith('jest.integration.config.js') ?? false)!;
     expect(integ.cliFilters).toEqual({ testPathIgnorePatterns: [], testPathPatterns: ['./integration'] });
     const e2e = by(specs, eng, s => s.status === 'notJest')!;
-    expect(e2e).toMatchObject({ displayName: '@wix/engine · e2e', reason: expect.stringMatching(/e2e config/) });
+    expect(e2e).toMatchObject({ displayName: '@example/engine · e2e', reason: expect.stringMatching(/e2e config/) });
     expect(e2e.jestVersion).toBeUndefined();
   });
 
@@ -154,10 +158,9 @@ describe('discoverProjects: engine-like repo', () => {
     const multi = by(specs, '/eng/packages/multi')!;
     expect(multi).toMatchObject({ flavor: 'implicit', status: 'ok', configArg: '/eng/packages/multi/jest.config.js' });
     expect(multi.warnings).toEqual([expect.stringMatching(/multipleConfigs: jest\.config\.js, package\.json/)]);
-    expect(by(specs, '/eng/packages/e2eonly')).toMatchObject({ flavor: 'script-config', status: 'notJest', configArg: '/eng/packages/e2eonly/detox/jest.config.js' });
+    expect(by(specs, '/eng/packages/e2eonly')).toMatchObject({ flavor: 'script-config', status: 'notJest', configArg: '/eng/packages/e2eonly/e2e/jest.config.js' });
     expect(specs.filter(s => s.packageDir === '/eng/packages/sub').map(s => s.configArg)).toEqual([undefined, '/eng/packages/sub/tools/jest.config.js']);
     expect(by(specs, '/eng/packages/sub/example')).toMatchObject({ status: 'ok', repoRoot: '/eng/packages/sub/example' }); // not a workspace member -> standalone
-    expect(by(specs, '/eng/packages/pb/package-bundler')).toMatchObject({ flavor: 'shono', status: 'ok', jestVersion: '29.7.0', jestPkgDir: '/eng/node_modules/@wix/shono-testjs/node_modules/jest' });
     expect(skipped.map(s => s.reason)).toEqual(['noTests']);
   });
 
@@ -171,73 +174,103 @@ describe('discoverProjects: engine-like repo', () => {
   });
 });
 
-describe('discoverProjects: shono packages', () => {
-  it('lets shono win over implicit configs and carries env, node args and the chain-resolved jest', () => {
-    const fs = mobileModulesFs();
-    const { specs, skipped } = run(fs, allPkgJsons(fs), {}, { env: { PATH: `${MULTISHELL}`, NODE_PATH: '/host/np' } });
-    const mv = by(specs, '/mm/packages/modules/mv', s => s.selected !== false)!;
-    expect(mv).toMatchObject({
-      flavor: 'shono', status: 'ok', displayName: '@wix/mv · shono', repoRoot: '/mm',
-      configArg: '/mm/node_modules/@wix/shono/node_modules/@wix/shono-testjs/dist/src/jestConfig.js',
-      jestPkgDir: '/mm/node_modules/jest', jestVersion: '29.7.0', nodeVersion: 'v22.17.0', nodePath: fnm('22.17.0'),
-      nodeArgs: ['--max-old-space-size=4096'],
-      env: { RNTL_SKIP_AUTO_DETECT_FAKE_TIMERS: 'true', USE_HEADLESS_PB: 'true', NODE_PATH: '/host/np:/mm/node_modules/@wix/wix-one-app-engine/node_modules:/mm/packages/modules/mv/node_modules' },
-      cliFilters: { testPathIgnorePatterns: [] },
+describe('discoverProjects: custom wrappers', () => {
+  const fixture = () => createMemFs({
+    '/repo/package.json': pkgJson({ scripts: { test: 'custom-test-tool unit' }, devDependencies: { '@example/test-tools': '1.0.0' } }),
+    '/repo/node_modules/@example/test-tools/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
+    '/repo/node_modules/@example/test-tools/node_modules/jest/bin/jest.js': '',
+  });
+
+  it('does not infer Jest or wrapper setup from an unknown command', () => {
+    const result = run(fixture(), ['/repo/package.json']);
+    expect(result.specs).toEqual([]);
+    expect(result.skipped).toEqual([expect.objectContaining({ reason: 'noTests' })]);
+  });
+
+  it('requires package-resolvable Jest even with an explicit config', () => {
+    const fs = fixture();
+    fs.write('/repo/custom.config.js', 'module.exports = {}');
+    const result = run(fs, ['/repo/package.json'], { projects: [{ packageDir: '/repo', configArg: 'custom.config.js' }] });
+    expect(result.specs.find(s => s.selected)).toMatchObject({ flavor: 'override', status: 'unavailable' });
+  });
+
+  it('uses explicit native configuration without injecting wrapper defaults', () => {
+    const fs = fixture();
+    fs.write('/repo/node_modules/jest/package.json', pkgJson({ name: 'jest', version: '30.4.2' }));
+    fs.write('/repo/node_modules/jest/bin/jest.js', '');
+    fs.write('/repo/hyperjest.config.js', '');
+    fs.write('/repo/custom.config.js', 'module.exports = {}');
+    const config = { jestConfig: './custom.config.js', env: { TEST_MODE: 'unit', NODE_PATH: '/custom/modules' }, nodeArgs: ['--max-old-space-size=2048'], tests: ['tests/unit/**/*.test.js'] };
+    const result = run(fs, ['/repo/package.json'], {}, { hyperConfigs: { '/repo/hyperjest.config.js': { config } } });
+    expect(result.specs.find(s => s.selected)).toMatchObject({
+      flavor: 'hyperjest', status: 'ok', configArg: '/repo/custom.config.js',
+      jestPkgDir: '/repo/node_modules/jest', jestVersion: '30.4.2', env: config.env, nodeArgs: config.nodeArgs,
+      scope: { baseDir: '/repo', tests: config.tests },
     });
-    expect(mv.warnings).toEqual([expect.stringMatching(/Implicit Jest config ignored \(jest\.config\.js, package\.json\): scripts run `shono testjs`/)]);
-    expect(mv.id).toBe(computeSpecId('/mm/packages/modules/mv', mv.configArg));
-    expect(by(specs, '/mm/packages/libraries/lib')).toMatchObject({ flavor: 'shono', status: 'ok', env: { RNTL_SKIP_AUTO_DETECT_FAKE_TIMERS: 'true', USE_HEADLESS_PB: 'true' } });
-    expect(skipped).toEqual([expect.objectContaining({ packageDir: '/mm', reason: 'noTests' })]);
   });
 
-  it('falls back to implicit resolution when shono is disabled or preferScriptConfigs is off', () => {
-    const fs = mobileModulesFs();
-    const disabled = run(fs, ['/mm/packages/modules/mv/package.json'], { shono: { enabled: false } });
-    const mv = disabled.specs.find(s => s.selected)!;
-    expect(mv).toMatchObject({ flavor: 'implicit', status: 'ok', configArg: '/mm/packages/modules/mv/jest.config.js' });
-    expect(mv.warnings).toEqual([expect.stringMatching(/hyperjest.shono.enabled is false/), expect.stringMatching(/multipleConfigs/)]);
-    const noPrefer = run(fs, ['/mm/packages/modules/mv/package.json'], { discovery: { ...DEFAULT_SETTINGS.discovery, preferScriptConfigs: false } });
-    expect(noPrefer.specs.find(s => s.selected)).toMatchObject({ flavor: 'implicit', configArg: '/mm/packages/modules/mv/jest.config.js', warnings: expect.arrayContaining([expect.stringMatching(/preferScriptConfigs is false/)]) });
+  it('honors generic Jest evidence despite an unknown wrapper command', () => {
+    const fs = fixture();
+    fs.write('/repo/jest.config.js', 'module.exports = {}');
+    fs.write('/repo/node_modules/jest/package.json', pkgJson({ name: 'jest', version: '29.7.0' }));
+    fs.write('/repo/node_modules/jest/bin/jest.js', '');
+    expect(run(fs, ['/repo/package.json']).specs.find(s => s.selected)).toMatchObject({ flavor: 'implicit', status: 'ok', env: {}, nodeArgs: [] });
+  });
+});
+
+describe('discoverProjects: configurable E2E exclusions', () => {
+  const fixture = () => createMemFs({
+    '/repo/package.json': pkgJson({ scripts: { test: 'jest -c config/browser.config.js' } }),
+    '/repo/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
+    '/repo/node_modules/jest/bin/jest.js': '',
+    '/repo/config/browser.config.js': "module.exports = { preset: '@example/browser-preset', testEnvironment: '@example/device-environment' };",
   });
 
-  it('marks a package unavailable when the shono chain is missing', () => {
-    const fs = createMemFs({ '/r/package.json': pkgJson({ workspaces: ['p/*'] }), '/r/p/a/package.json': pkgJson({ name: 'a', scripts: { test: 'shono testjs' } }) });
-    const { specs } = run(fs, ['/r/p/a/package.json']);
-    expect(specs[0]).toMatchObject({ flavor: 'shono', status: 'unavailable', reason: expect.stringMatching(/@wix\/shono-testjs is not resolvable/) });
+  it('does not classify configs by their preset or environment contents', () => {
+    expect(run(fixture(), ['/repo/package.json']).specs[0]).toMatchObject({ status: 'ok', flavor: 'script-config' });
+  });
+
+  it('lets users exclude additional paths or clear the default exclusions', () => {
+    const fs = fixture();
+    expect(run(fs, ['/repo/package.json'], { discovery: { ...DEFAULT_SETTINGS.discovery, e2ePatterns: ['**/config/**'] } }).specs[0]).toMatchObject({ status: 'notJest' });
+    fs.write('/repo/package.json', pkgJson({ scripts: { test: 'jest -c e2e/jest.config.js' } }));
+    fs.write('/repo/e2e/jest.config.js', 'module.exports = {}');
+    expect(run(fs, ['/repo/package.json']).specs.find(s => s.configArg === '/repo/e2e/jest.config.js')).toMatchObject({ status: 'notJest' });
+    expect(run(fs, ['/repo/package.json'], { discovery: { ...DEFAULT_SETTINGS.discovery, e2ePatterns: [] } }).specs.find(s => s.configArg === '/repo/e2e/jest.config.js')).toMatchObject({ status: 'ok' });
   });
 });
 
 describe('discoverProjects: degraded and overridden packages', () => {
-  const baFs = () =>
+  const uninstalledFs = () =>
     createMemFs({
-      '/w/ba/package.json': pkgJson({ workspaces: { packages: ['packages/server/*'] } }),
-      '/w/ba/.nvmrc': '20.19.4',
-      '/w/ba/packages/server/jest.config.js': 'module.exports = { preset: "ts-jest" }',
-      '/w/ba/packages/server/srv/package.json': pkgJson({ name: 'srv', scripts: { test: 'jest' }, devDependencies: { jest: '29.5.0' } }),
-      '/w/ba/packages/server/srv/jest.config.js': "module.exports = require('../jest.config')",
-      '/w/ba/serverless/rpc/package.json': pkgJson({ name: 'rpc', scripts: { test: 'jest' }, devDependencies: { jest: '^27.4.7' } }),
-      '/w/ba/serverless/rpc/jest.config.js': '',
-      '/w/ba/serverless/rpc/package-lock.json': '{}',
-      '/w/ap/package.json': pkgJson({ workspaces: ['packages/*'] }),
-      '/w/ap/packages/appium/package.json': pkgJson({ name: 'appium-tests', scripts: { test: ':' }, devDependencies: { jest: '^29.7.0', 'ts-jest': '^29', '@wix-pilot/webdriverio-appium': '^1', '@wix/applot': '^1' } }),
-      '/w/ap/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
+      '/w/uninstalled/package.json': pkgJson({ workspaces: { packages: ['packages/server/*'] } }),
+      '/w/uninstalled/.nvmrc': '20.19.4',
+      '/w/uninstalled/packages/server/jest.config.js': 'module.exports = { preset: "ts-jest" }',
+      '/w/uninstalled/packages/server/srv/package.json': pkgJson({ name: 'srv', scripts: { test: 'jest' }, devDependencies: { jest: '29.5.0' } }),
+      '/w/uninstalled/packages/server/srv/jest.config.js': "module.exports = require('../jest.config')",
+      '/w/uninstalled/serverless/rpc/package.json': pkgJson({ name: 'rpc', scripts: { test: 'jest' }, devDependencies: { jest: '^27.4.7' } }),
+      '/w/uninstalled/serverless/rpc/jest.config.js': '',
+      '/w/uninstalled/serverless/rpc/package-lock.json': '{}',
+      '/w/browser/package.json': pkgJson({ workspaces: ['packages/*'] }),
+      '/w/browser/packages/appium/package.json': pkgJson({ name: 'browser-tests', scripts: { test: ':' }, devDependencies: { jest: '^29.7.0', 'ts-jest': '^29', webdriverio: '^9', appium: '^2' } }),
+      '/w/browser/node_modules/jest/package.json': pkgJson({ name: 'jest', version: '29.7.0' }),
     });
 
   it('reports unavailable / unsupported / notJest with actionable reasons and node fallback warnings', () => {
-    const fs = baFs();
+    const fs = uninstalledFs();
     const { specs } = run(fs, allPkgJsons(fs));
-    const srv = by(specs, '/w/ba/packages/server/srv')!;
-    expect(srv).toMatchObject({ status: 'unavailable', reason: 'node_modules is not installed under /w/ba — run `yarn install` there', nodeVersion: 'v24.19.0' });
+    const srv = by(specs, '/w/uninstalled/packages/server/srv')!;
+    expect(srv).toMatchObject({ status: 'unavailable', reason: 'node_modules is not installed under /w/uninstalled — run `yarn install` there', nodeVersion: 'v24.19.0' });
     expect(srv.jestVersion).toBeUndefined();
-    expect(srv.warnings).toEqual([expect.stringMatching(/Node 20\.19\.4 requested by \/w\/ba\/\.nvmrc is not installed/)]);
-    expect(by(specs, '/w/ba/serverless/rpc')).toMatchObject({ status: 'unsupported', repoRoot: '/w/ba/serverless/rpc', reason: expect.stringMatching(/declares jest \^27\.4\.7 \(< 29\)/) });
-    expect(by(specs, '/w/ap/packages/appium')).toMatchObject({ status: 'notJest', reason: expect.stringMatching(/jest is only a dependency; test tooling is @wix-pilot\/webdriverio-appium, @wix\/applot/) });
-    expect(specs.find(s => s.packageDir === '/w/ba')).toBeUndefined();
+    expect(srv.warnings).toEqual([expect.stringMatching(/Node 20\.19\.4 requested by \/w\/uninstalled\/\.nvmrc is not installed/)]);
+    expect(by(specs, '/w/uninstalled/serverless/rpc')).toMatchObject({ status: 'unsupported', repoRoot: '/w/uninstalled/serverless/rpc', reason: expect.stringMatching(/declares jest \^27\.4\.7 \(< 29\)/) });
+    expect(by(specs, '/w/browser/packages/appium')).toMatchObject({ status: 'notJest', reason: expect.stringMatching(/jest is only a dependency; test tooling is webdriverio, appium/) });
+    expect(specs.find(s => s.packageDir === '/w/uninstalled')).toBeUndefined();
   });
 
   it('applies hyperjest.projects overrides and env/nodeArgs merge order', () => {
-    const fs = relopsFs();
-    const agent = '/w/relops/packages/agent';
+    const fs = workspaceFs();
+    const agent = '/w/workspace/packages/agent';
     const disabled = run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, disabled: true }] }).specs;
     expect(disabled).toEqual([expect.objectContaining({ flavor: 'override', status: 'disabled', reason: 'disabled by hyperjest.projects', displayName: 'agent' })]);
     fs.write(`${agent}/custom.config.js`, '');
@@ -245,7 +278,7 @@ describe('discoverProjects: degraded and overridden packages', () => {
       projects: [{ packageDir: 'packages/agent', configArg: 'custom.config.js', env: { A: '1' }, nodePath: fnm('22.17.0') }],
       env: { A: '0', B: '2' },
       nodeArgs: ['--no-warnings'],
-    }, { workspaceFolders: ['/w/relops'] }).specs;
+    }, { workspaceFolders: ['/w/workspace'] }).specs;
     expect(over.filter(s => s.selected)).toHaveLength(1);
     expect(over.find(s => s.selected)).toMatchObject({ flavor: 'override', status: 'ok', configArg: `${agent}/custom.config.js`, displayName: 'agent · custom.config.js', env: { A: '1', B: '2' }, nodeArgs: ['--no-warnings'], nodePath: fnm('22.17.0'), nodeVersion: 'v22.17.0' });
   });
@@ -270,12 +303,12 @@ describe('discoverProjects: degraded and overridden packages', () => {
 
 describe('discoverProjectsAsync', () => {
   it('validates node binaries asynchronously (never through the sync exec) and matches the sync result', async () => {
-    const fs = relopsFs();
+    const fs = workspaceFs();
     const paths = allPkgJsons(fs);
     const machine = withMachine(fs);
     const base = {
       packageJsonPaths: paths, settings: DEFAULT_SETTINGS, homeDir: HOME, platform: 'darwin' as const, env: { PATH: `${MULTISHELL}:/usr/bin` },
-      fs: machine, resolve: createFsResolveFn(machine), electronExecPath: '/Applications/Code.app/Electron', workspaceFolders: ['/w/relops'],
+      fs: machine, resolve: createFsResolveFn(machine), electronExecPath: '/Applications/Code.app/Electron', workspaceFolders: ['/w/workspace'],
     };
     const expected = discoverProjects({ ...base, exec: createFakeExec(), nodeVersionCache: new Map() });
     const syncExec = createFakeExec();
@@ -297,36 +330,36 @@ describe('discoverProjectsAsync', () => {
 
 
 describe('HyperJest configuration selection', () => {
-  const agent = '/w/relops/packages/agent';
+  const agent = '/w/workspace/packages/agent';
   const file = `${agent}/hyperjest.config.js`;
   const native = { config: { jestConfig: './jest.config.js', tests: ['tests/unit/**/*.test.ts'] } };
   it('selects the main script by default and keeps integration available but inactive', () => {
-    const specs = run(relopsFs(), [`${agent}/package.json`]).specs;
+    const specs = run(workspaceFs(), [`${agent}/package.json`]).specs;
     expect(specs.filter(s => s.selected).map(s => s.configKey)).toEqual(['jest.config.js']);
     expect(specs.find(s => s.configKey === 'jest.integration.config.js')?.selected).toBe(false);
   });
   it('breaks script priority ties by command order, including implicit configs', () => {
     for (const first of [true, false]) {
-      const fs = relopsFs();
+      const fs = workspaceFs();
       fs.write(`${agent}/package.json`, pkgJson({ name: 'agent', scripts: { test: first ? 'jest && jest -c jest.integration.config.js' : 'jest -c jest.integration.config.js && jest' } }));
       const selected = run(fs, [`${agent}/package.json`]).specs.filter(s => s.selected);
       expect(selected.map(s => s.configKey)).toEqual([first ? 'jest.config.js' : 'jest.integration.config.js']);
     }
   });
   it('keeps a missing primary script config unavailable instead of selecting another config', () => {
-    const fs = relopsFs();
+    const fs = workspaceFs();
     fs.write(`${agent}/package.json`, pkgJson({ name: 'agent', scripts: { test: 'jest -c missing.js', 'test:integration': 'jest -c jest.integration.config.js' } }));
     expect(run(fs, [`${agent}/package.json`]).specs.filter(s => s.selected)).toEqual([expect.objectContaining({ configKey: 'missing.js', status: 'unavailable' })]);
   });
   it('lists a config only once when scripts reference it both implicitly and explicitly', () => {
-    const fs = relopsFs();
+    const fs = workspaceFs();
     fs.write(`${agent}/package.json`, pkgJson({ name: 'agent', scripts: { test: 'FIRST=yes jest && SECOND=yes jest -c jest.config.js' } }));
     const specs = run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configFiles: ['jest.config.js'] }] }).specs;
     expect(specs.filter(s => s.configKey === 'jest.config.js')).toHaveLength(1);
     expect(specs.find(s => s.selected)?.env).toMatchObject({ FIRST: 'yes' });
   });
   it('selects the native default and keeps its identity separate from the underlying Jest config', () => {
-    const fs = relopsFs(); fs.write(file, 'module.exports = {}');
+    const fs = workspaceFs(); fs.write(file, 'module.exports = {}');
     const specs = run(fs, [`${agent}/package.json`], {}, { hyperConfigs: { [file]: native } }).specs;
     const selected = specs.filter(s => s.selected);
     expect(selected).toHaveLength(1);
@@ -334,7 +367,7 @@ describe('HyperJest configuration selection', () => {
     expect(selected[0].id).toBe(computeSpecId(agent, file));
   });
   it('honors explicit multiple/empty selections, disabled packages and legacy pins', () => {
-    const fs = relopsFs(); fs.write(file, 'module.exports = {}');
+    const fs = workspaceFs(); fs.write(file, 'module.exports = {}');
     for (const configFiles of [['hyperjest.config.js', 'jest.integration.config.js'], []]) {
       const specs = run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configFiles, configArg: 'jest.config.js' }] }, { hyperConfigs: { [file]: native } }).specs;
       expect(specs.filter(s => s.selected).map(s => s.configKey).sort()).toEqual([...configFiles].sort());
@@ -343,7 +376,7 @@ describe('HyperJest configuration selection', () => {
     expect(run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configArg: 'jest.integration.config.js' }] }).specs.filter(s => s.selected).map(s => s.configKey)).toEqual(['jest.integration.config.js']);
   });
   it('does not fall back from a malformed default or a missing selected config', () => {
-    const fs = relopsFs(); fs.write(file, 'broken');
+    const fs = workspaceFs(); fs.write(file, 'broken');
     const invalid = run(fs, [`${agent}/package.json`], {}, { hyperConfigs: { [file]: { error: 'Invalid scope' } } }).specs.filter(s => s.selected);
     expect(invalid).toHaveLength(1); expect(invalid[0]).toMatchObject({ status: 'unavailable', reason: 'Invalid scope' });
     const missing = run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configFiles: ['missing.js'] }] }).specs.filter(s => s.selected);

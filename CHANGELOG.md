@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Project discovery now uses ordinary Jest resolution and explicit project configuration for custom tooling. Removed vendor-specific integrations and defaults.
+- Development fixtures, documentation, and validation tools are portable. External parser validation requires explicitly supplied directory paths.
+
 ## 0.1.0
 
 - Initial release: offline, multi-core Jest runner with Wallaby-style gutter coverage, inline errors/values, Test Explorer integration, on-type/on-save runs, debugging and snapshot commands.

@@ -1,5 +1,5 @@
 import {
-  allCommands, commandPriority, isE2eScriptName, isShonoConfigPath, isTestLikeScriptName, nodeOptionsToArgs, parseJestArgs, scriptPriority,
+  allCommands, commandPriority, isE2eScriptName, isTestLikeScriptName, nodeOptionsToArgs, parseJestArgs, scriptPriority,
   sniffScripts, splitCommands, tokenize,
 } from '../../../src/core/scriptSniffer';
 
@@ -48,22 +48,19 @@ describe('sniffScripts classification', () => {
     expect(one('env FOO=1 jest')[0]).toMatchObject({ runner: 'jest', env: { FOO: '1' } });
     expect(one('NODE_OPTIONS="--max-old-space-size=4096 --no-warnings" jest')[0].env).toEqual({ NODE_OPTIONS: '--max-old-space-size=4096 --no-warnings' });
     expect(nodeOptionsToArgs('--max-old-space-size=4096 --no-warnings')).toEqual(['--max-old-space-size=4096', '--no-warnings']);
-    const cmds = one('export BABEL_ENV=test && yarn run shono:test && npm run test-e2e-sanity', { 'shono:test': 'shono testjs', 'test-e2e-sanity': 'node e2e/run.js' });
+    const cmds = one('export BABEL_ENV=test && yarn run tools:test && npm run test-e2e-sanity', { 'tools:test': 'jest', 'test-e2e-sanity': 'node e2e/run.js' });
     expect(cmds).toHaveLength(2);
-    expect(cmds[0]).toMatchObject({ runner: 'shono-testjs', script: 'shono:test', via: ['test'], env: { BABEL_ENV: 'test' } });
+    expect(cmds[0]).toMatchObject({ runner: 'jest', script: 'tools:test', via: ['test'], env: { BABEL_ENV: 'test' } });
     expect(cmds[1]).toMatchObject({ runner: 'other', script: 'test-e2e-sanity', via: ['test'], bin: 'node e2e/run.js' });
   });
 
-  it('recognises shono testjs in CLI and inlined forms', () => {
-    expect(one('shono testjs')[0]).toMatchObject({ runner: 'shono-testjs', shono: { fileName: undefined, flags: [] } });
-    expect(one('shono testjs headlessTests')[0].shono).toEqual({ fileName: 'headlessTests', flags: [] });
-    expect(one('shono testjs -- --colors')[0].shono).toEqual({ fileName: undefined, flags: ['--colors'] });
-    const inlined = one('USE_HEADLESS_PB=true NODE_PATH=${NODE_PATH:-}:../../../node_modules/@wix/wix-one-app-engine/node_modules:./node_modules RNTL_SKIP_AUTO_DETECT_FAKE_TIMERS=true NODE_OPTIONS=--max_old_space_size=8192 ../../../node_modules/jest/bin/jest.js -c ../../../node_modules/@wix/shono/node_modules/@wix/shono-testjs/dist/src/jestConfig.js --maxWorkers=1')[0];
-    expect(inlined.runner).toBe('jest');
-    expect(isShonoConfigPath(inlined.jest!.configArg)).toBe(true);
-    expect(inlined.env).toEqual({ USE_HEADLESS_PB: 'true', NODE_PATH: '${NODE_PATH:-}:../../../node_modules/@wix/wix-one-app-engine/node_modules:./node_modules', RNTL_SKIP_AUTO_DETECT_FAKE_TIMERS: 'true', NODE_OPTIONS: '--max_old_space_size=8192' });
-    expect(inlined.jest!.flags.maxWorkers).toBe('1');
-    expect(isShonoConfigPath('/x/jest.config.js')).toBe(false);
+  it('leaves unknown runner commands uninterpreted', () => {
+    expect(one('custom-test-tool unit --colors')[0]).toMatchObject({ runner: 'other', bin: 'custom-test-tool', args: ['unit', '--colors'] });
+    const command = one('TEST_MODE=unit NODE_PATH=./modules NODE_OPTIONS=--max_old_space_size=8192 node ./node_modules/jest/bin/jest.js -c ./config/custom.js --maxWorkers=1')[0];
+    expect(command.runner).toBe('jest');
+    expect(command.jest?.configArg).toBe('./config/custom.js');
+    expect(command.env).toEqual({ TEST_MODE: 'unit', NODE_PATH: './modules', NODE_OPTIONS: '--max_old_space_size=8192' });
+    expect(command.jest?.flags.maxWorkers).toBe('1');
   });
 
   it('classifies non-jest runners', () => {
@@ -72,7 +69,6 @@ describe('sniffScripts classification', () => {
     expect(one('node scripts/test.js')[0]).toMatchObject({ runner: 'other', bin: 'node scripts/test.js' });
     expect(one('mocha "src/**/*.spec.js"')[0].runner).toBe('mocha');
     expect(one('wdio run wdio.conf.ts')[0].runner).toBe('wdio');
-    expect(one('detox test -c ios.sim.debug')[0].runner).toBe('detox');
     expect(one('vitest run')[0].runner).toBe('vitest');
     expect(one('yarn workspaces foreach --all run test')[0].runner).toBe('other');
     expect(one(':')[0]).toMatchObject({ runner: 'other', bin: ':' });
@@ -87,12 +83,12 @@ describe('sniffScripts classification', () => {
   });
 
   it('ranks script names', () => {
-    expect([scriptPriority('test'), scriptPriority('test:js'), scriptPriority('testjs'), scriptPriority('test-js'), scriptPriority('test:unit'), scriptPriority('test:integration'), scriptPriority('test:e2e'), scriptPriority('lint'), scriptPriority('shono:test')]).toEqual([0, 1, 1, 1, 2, 3, 8, 5, 4]);
-    expect(isTestLikeScriptName('shono:test')).toBe(true);
+    expect([scriptPriority('test'), scriptPriority('test:js'), scriptPriority('testjs'), scriptPriority('test-js'), scriptPriority('test:unit'), scriptPriority('test:integration'), scriptPriority('test:e2e'), scriptPriority('lint'), scriptPriority('tools:test')]).toEqual([0, 1, 1, 1, 2, 3, 8, 5, 4]);
+    expect(isTestLikeScriptName('tools:test')).toBe(true);
     expect(isTestLikeScriptName('build')).toBe(false);
     expect(isE2eScriptName('test:e2e:ios')).toBe(true);
     expect(isE2eScriptName('test')).toBe(false);
-    const infos = sniffScripts({ test: 'yarn run shono:test', 'shono:test': 'shono testjs' });
+    const infos = sniffScripts({ test: 'yarn run tools:test', 'tools:test': 'jest' });
     expect(commandPriority(infos[0].commands[0])).toBe(0);
   });
 });

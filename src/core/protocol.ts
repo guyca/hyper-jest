@@ -13,8 +13,6 @@ export const PROTOCOL_VERSION = 1;
 // ---------------------------------------------------------------------------------------------
 
 export type ProjectFlavor =
-  /** Wix `shono testjs`: run <jest> -c <shono-testjs>/dist/src/jestConfig.js with shono's env. */
-  | 'shono'
   /** A config referenced by a package.json test script (`jest -c X`, flags). */
   | 'script-config'
   /** Jest's own implicit resolution (nearest jest.config.* or package.json `jest`). */
@@ -31,7 +29,7 @@ export type ProjectStatus =
   | 'unavailable'
   /** Jest < 29 or unsupported runner. */
   | 'unsupported'
-  /** Package has tests but they are not Jest (mocha, node --test, detox e2e). */
+  /** Package has tests but they are not Jest (mocha, node --test). */
   | 'notJest'
   | 'disabled';
 
@@ -67,7 +65,7 @@ export interface ProjectSpec {
     /** Positional / `--testPathPattern(s)` regexes from the package's test script (static file filtering only; never passed to Jest). */
     testPathPatterns?: string[];
   };
-  /** Glob patterns (relative to packageDir) that mark e2e/detox files to exclude from discovery. */
+  /** Glob patterns (relative to packageDir) that mark e2e files to exclude from discovery. */
   e2ePatterns: string[];
   warnings: string[];
 }

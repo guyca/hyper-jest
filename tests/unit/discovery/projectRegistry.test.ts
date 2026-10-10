@@ -31,7 +31,7 @@ import { PROTOCOL_VERSION, type ProjectSpec } from '../../../src/core/protocol';
 const ENG = '/eng/packages/engine';
 
 const spec = (id: string, over: Partial<ProjectSpec> = {}): ProjectSpec => ({
-  id, displayName: `@wix/engine · ${id}`, repoRoot: '/eng', packageDir: ENG, flavor: 'script-config', status: 'ok',
+  id, displayName: `@example/engine · ${id}`, repoRoot: '/eng', packageDir: ENG, flavor: 'script-config', status: 'ok',
   configArg: `${ENG}/${id}`, nodePath: '/usr/bin/node', nodeArgs: [], env: {}, cliFilters: { testPathIgnorePatterns: [] },
   e2ePatterns: [], warnings: [], jestPkgDir: '/eng/node_modules/jest', jestVersion: '30.4.2', ...over,
 });

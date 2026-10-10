@@ -138,8 +138,6 @@ export interface PackageJsonLike {
   engines?: Record<string, string>;
   workspaces?: string[] | { packages?: string[]; nohoist?: string[] };
   jest?: unknown;
-  wix?: { isOneAppModule?: boolean; [k: string]: unknown };
-  shono?: { testjs?: Record<string, unknown>; [k: string]: unknown };
   [k: string]: unknown;
 }
 

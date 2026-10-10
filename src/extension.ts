@@ -42,7 +42,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     getSettings: () => settings.get(),
     log,
   });
-  const discoverySettings = () => { const s = settings.get(); return JSON.stringify([s.projects, s.discovery, s.shono, s.nodePath, s.nodeArgs, s.env]); };
+  const discoverySettings = () => { const s = settings.get(); return JSON.stringify([s.projects, s.discovery, s.nodePath, s.nodeArgs, s.env]); };
   let previousDiscoverySettings = discoverySettings();
   const registry = new ProjectRegistry(pool, () => settings.get(), log, context.globalState);
   const store = new ResultStore({ maxEntriesPerLine: Math.max(10, settings.get().console.maxEntriesPerTest) });

@@ -30,7 +30,7 @@ export const DEBUG_TEST_TIMEOUT_MS = 2147483647;
 /**
  * Env vars that make Jest >= 30.4 pick its 'agent' reporter by default
  * (verified: @jest/core 30.4.2 build/index.js:1010 `AGENT_ENV_VARS`, identical in 30.5.2).
- * We pass explicit `--reporters`, but dropping them also keeps child tools (e.g. shono, custom
+ * We pass explicit `--reporters`, but dropping them also keeps child tools (e.g. custom
  * reporters in configs) from switching into agent modes. Single source of truth: src/core/childEnv.ts.
  */
 export const AGENT_REPORTER_ENV_VARS: readonly string[] = AGENT_REPORTER_TRIGGERS;
@@ -51,7 +51,7 @@ export interface RunSpecProject {
   /** Passed as `-c <configArg>`; undefined = Jest's implicit resolution. */
   configArg?: string;
   cliFilters?: { testPathIgnorePatterns?: string[] };
-  /** Project-level env (e.g. shono's RNTL_SKIP_AUTO_DETECT_FAKE_TIMERS / NODE_PATH). */
+  /** Project-level env (including explicit NODE_PATH overrides). */
   env?: Record<string, string>;
   nodePath?: string;
   nodeArgs?: string[];

@@ -67,7 +67,7 @@ src/workerPool.ts           N = max(1, cpus-1) warm workers; per-project caps, m
 src/runner.ts               RunCoordinator: queue/priorities/generations, warm or CLI dispatch, on-type/on-save affected runs,
                             Smart Start, continuous runs, snapshots, debug, cancel; implements src/runnerApi.ts
 src/discovery/              packageScanner (findFiles), projectRegistry (file->project, readiness, toolchain invalidation), configCache
-src/core/                   PURE: protocol.ts (host<->worker messages), projectSpec/scriptSniffer/shono/jestResolver/nodeResolver
+src/core/                   PURE: protocol.ts (host<->worker messages), projectSpec/scriptSniffer/jestResolver/nodeResolver
                             (discovery), testFileMatcher (Jest's isTestFilePath replica), testParser (@babel/parser) + testIds
                             (reconciliation), changeAnalyzer/textDiff/affected (what to re-run), runSpec (CLI argv), cliEvents
                             (reporter NDJSON), childEnv (sanitised env), settingsModel, resultModel, testModel
@@ -121,16 +121,17 @@ Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist
   node scripts/worker-driver.mjs run <test file> --pkg <packageDir> --repeat 2
   node scripts/worker-driver.mjs show-config --pkg <packageDir>
   node scripts/discovery-report.mjs --repo <repoDir> --show-warnings
+  HYPERJEST_CORPUS_ROOTS='["/path/to/project"]' yarn test tests/unit/parser/corpus.test.ts
   ```
 - **Nothing runs for a package** → Doctor: `unavailable` means `jest` does not resolve from the package (run the
-  repo's `yarn install`); `notJest` means the test script is not Jest (node --test, mocha, detox); `unsupported`
+  repo's `yarn install`); `notJest` means the test script is not Jest (node --test, mocha); `unsupported`
   means Jest < 29. Force a spec with `hyperjest.projects: [{ "packageDir": "...", "configArg": "..." }]`.
 - **Wrong tests / wrong config picked** → the registry prefers configs named by `package.json` test scripts
-  (`jest -c x`, `shono testjs`) over implicit `jest.config.*`; `hyperjest.discovery.preferScriptConfigs: false`
-  flips that. Shono packages run `<shono-testjs>/dist/src/jestConfig.js` with shono's env and `NODE_PATH`; the
-  first load runs shono's idempotent `patchFiles()` into that repo's `node_modules`, exactly like `shono testjs`.
+  (`jest -c x`) over implicit `jest.config.*`; `hyperjest.discovery.preferScriptConfigs: false`
+  flips that. Custom tooling supplies its setup through `hyperjest.config.js` or workspace settings;
+  Jest must resolve from the package through normal dependency resolution.
 - **"Multiple configurations found"** → a package has both `jest.config.*` and a `package.json` `jest` key. Jest
-  itself refuses this; HyperJest reports it unless a script/shono config wins.
+  itself refuses this; HyperJest reports it unless a script-selected config wins.
 - **Node version** → `.nvmrc` / `.node-version` / `engines.node` are matched against fnm, nvm, volta, asdf, n and
   Homebrew installs, then PATH `node`, then VS Code's own Node. A missing version produces a warning and a
   fallback; set `hyperjest.nodePath` to pin one. Jest 30 needs Node ≥ 18.14.
@@ -152,6 +153,11 @@ Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist
   Config` shows the `rootDir` Jest resolved.
 - **Gutter icons missing** → VS Code's own test gutter (`testing.gutterEnabled`) owns declaration lines when
   `hyperjest.gutter.testDeclarations` is `auto`; coverage squares need `hyperjest.coverage.enabled`.
+
+Local projects are optional validation inputs only. Supply their paths at invocation time; keep their
+names, paths, source, and reports out of this repository. The discovery report defaults to the current
+directory; repeat `--repo` to inspect multiple directories. The parser corpus test skips when
+`HYPERJEST_CORPUS_ROOTS` is unset and reports invalid or missing configured directories as errors.
 
 ## Verification checklist (before a release)
 

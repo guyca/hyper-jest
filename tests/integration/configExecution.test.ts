@@ -1,4 +1,4 @@
-/** Real warm/CLI execution of a relops-shaped package; uses only local fixture tests. */
+/** Real warm/CLI execution of a multi-config package; uses only local fixture tests. */
 import { fork, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';

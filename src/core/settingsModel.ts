@@ -39,7 +39,6 @@ export interface HyperJestSettings {
   env: Record<string, string>;
   projects: ProjectOverride[];
   discovery: { exclude: string[]; e2ePatterns: string[]; preferScriptConfigs: boolean };
-  shono: { enabled: boolean };
   globalSetup: 'once' | 'skip';
   tsJest: { diagnostics: 'keep' | 'off' };
   coverage: { enabled: boolean; perTest: boolean; instrumentTestFiles: boolean };
@@ -79,10 +78,9 @@ export const DEFAULT_SETTINGS: HyperJestSettings = {
   projects: [],
   discovery: {
     exclude: ['**/node_modules/**', '**/.claude/worktrees/**', '**/dist/**', '**/build/**', '**/coverage/**', '**/ios/**', '**/android/**', '**/Pods/**'],
-    e2ePatterns: ['**/e2e/**', '**/detox/**', '**/production-e2e/**', '**/*.e2e.*'],
+    e2ePatterns: ['**/e2e/**', '**/*.e2e.*'],
     preferScriptConfigs: true,
   },
-  shono: { enabled: true },
   globalSetup: 'once',
   tsJest: { diagnostics: 'keep' },
   coverage: { enabled: true, perTest: true, instrumentTestFiles: false },
