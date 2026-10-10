@@ -1,0 +1,17 @@
+.vscode/**
+.github/**
+src/**
+tests/**
+scripts/**
+node_modules/**
+esbuild.mjs
+jest.config.js
+tsconfig*.json
+.npmrc
+.gitignore
+**/*.map
+**/*.ts
+media/icon.svg
+WALLABY_FEATURE_ANALYSIS.md
+CLAUDE.md
+AGENTS.md

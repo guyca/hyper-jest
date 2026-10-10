@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2021",
+    "lib": ["ES2021"],
+    "types": ["node"]
+  },
+  "include": ["src/worker/**/*.ts", "src/core/**/*.ts"],
+  "exclude": ["dist", "node_modules", "tests/**"]
+}
