@@ -88,7 +88,7 @@ export const DEFAULT_SETTINGS: HyperJestSettings = {
   coverage: { enabled: true, perTest: true, instrumentTestFiles: false },
   affected: { useStaticGraph: true, trackFileLoading: true, discoverWithJest: true, alwaysRunFailing: true },
   gutter: { enabled: true, testDeclarations: 'auto' },
-  colors: { covered: '#62b455', partiallyCovered: '#d2a032', notCovered: '#d2a032', errorPath: '#ffa0a0', errorSource: '#fe536a' },
+  colors: { covered: '#62b455', partiallyCovered: '#d2a032', notCovered: '#cccccc', errorPath: '#ffa0a0', errorSource: '#fe536a' },
   inline: { showErrors: true, showLogs: true, showValues: true, maxLength: 120, maxLogsPerLine: 3 },
   liveComments: { enabled: true, maxDepth: 5, maxStringLength: 8192 },
   console: { maxEntriesPerTest: 100 },
