@@ -301,15 +301,15 @@ describe('ResultStore', () => {
     expect(store.summary().failed).toBe(1);
   });
 
-  it('records testExecError and resets coverage when a source file\'s hash changes', () => {
+  it('records testExecError without erasing dependencies on metadata arrival', () => {
     const { store } = makeStore();
     applyFullRun(store, 'r1');
     store.apply(coverageMeta('h2'), PROJECT);
     const cov = store.coverageFor(SRC)!;
-    expect(cov.meta?.hash).toBe('h2');
-    expect(cov.stmtHitBy.size).toBe(0);
-    expect(cov.stmtHitByFile.size).toBe(0);
-    expect(store.execBy().has(SRC)).toBe(false);
+    expect(cov.meta?.hash).toBe('h1'); // display stays on committed coverage
+    expect(cov.stmtHitBy.size).toBeGreaterThan(0);
+    expect(cov.stmtHitByFile.size).toBeGreaterThan(0);
+    expect(store.execBy().has(SRC)).toBe(true);
     store.apply(fileStart('r2'), PROJECT);
     store.apply(fileResult('r2', 'errored', { testExecError: { message: 'SyntaxError: unexpected token', frames: [{ file: SPEC, line: 1, column: 1 }] } }), PROJECT);
     expect(store.fileRecord(SPEC)!.status).toBe('errored');

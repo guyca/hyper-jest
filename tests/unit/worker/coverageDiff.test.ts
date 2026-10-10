@@ -2,6 +2,7 @@ import {
   buildCoverageMeta, coverageHash, diffSnapshots, hitBranchArms, hitStatements, increasedIds, makeLineRemapper,
   snapshotBranches, snapshotStatements, takeSnapshot, type IstanbulFileCoverage, type TraceMappingLike,
 } from '../../../src/worker/coverageDiff';
+import { captureTransformedSource, resetSourceCapture } from '../../../src/worker/sourceCapture';
 
 const range = (l1: number, c1: number, l2: number, c2: number) => ({ start: { line: l1, column: c1 }, end: { line: l2, column: c2 } });
 
@@ -19,6 +20,25 @@ function fc(over: Partial<IstanbulFileCoverage> = {}): IstanbulFileCoverage {
 }
 
 describe('coverageDiff', () => {
+  beforeEach(() => resetSourceCapture());
+  it('records function calls even when no statement ran', () => {
+    const file = fc();
+    const before = takeSnapshot({ [file.path]: file });
+    file.f[0]++;
+    expect(diffSnapshots(before, { [file.path]: file })).toEqual([{ path: file.path, stmts: [], fns: [0] }]);
+  });
+
+  it('only trusts complete single-source mappings paired with captured transform text', () => {
+    captureTransformedSource('/p/math.js', { originalCode: 'function add(a, b) {\n  return a + b;\n}\n' });
+    const complete: TraceMappingLike = { TraceMap: class {}, originalPositionFor: (_t, pos) => ({ ...pos, source: '/p/math.js' }) };
+    const file = fc({ inputSourceMap: {} });
+    expect(buildCoverageMeta(file, complete).originalCoordinates).toBe(true);
+    expect(buildCoverageMeta(file).originalCoordinates).toBe(false);
+    const partial: TraceMappingLike = { ...complete, originalPositionFor: (_t, pos) => pos.line === 3 ? { line: null, column: null } : { ...pos, source: '/p/math.js' } };
+    expect(buildCoverageMeta(file, partial).originalCoordinates).toBe(false);
+    const other: TraceMappingLike = { ...complete, originalPositionFor: (_t, pos) => ({ ...pos, source: '/p/other.js' }) };
+    expect(buildCoverageMeta(file, other).originalCoordinates).toBe(false);
+  });
   it('snapshots counters in id order and diffs increases', () => {
     const a = fc({ s: { 0: 1, 1: 0, 2: 3 } });
     expect(Array.from(snapshotStatements(a))).toEqual([1, 0, 3]);
@@ -34,10 +54,10 @@ describe('coverageDiff', () => {
     expect([...snap.keys()]).toEqual(['/p/math.js']);
     cov['/p/math.js'].s[2] = 1;
     cov['/p/math.js'].s[0] = 2;
-    expect(diffSnapshots(snap, cov)).toEqual([{ path: '/p/math.js', stmts: [0, 2] }]);
+    expect(diffSnapshots(snap, cov)).toEqual([{ path: '/p/math.js', stmts: [0, 2], fns: [] }]);
     expect(diffSnapshots(snap, undefined)).toEqual([]);
     const fresh = { '/p/new.js': fc({ path: '/p/new.js', s: { 0: 0, 1: 7, 2: 0 } }) };
-    expect(diffSnapshots(new Map(), fresh)).toEqual([{ path: '/p/new.js', stmts: [1] }]);
+    expect(diffSnapshots(new Map(), fresh)).toEqual([{ path: '/p/new.js', stmts: [1], fns: [] }]);
   });
 
   it('reports hit statements and branch arms', () => {
@@ -48,8 +68,8 @@ describe('coverageDiff', () => {
 
   it('builds coverage meta in generated coordinates when no source map exists', () => {
     const meta = buildCoverageMeta(fc({ hash: 'abc' }));
-    expect(meta).toEqual({
-      path: '/p/math.js', hash: 'abc', stmtStartLine: [2, 6, 7], stmtEndLine: [2, 8, 7], fnDeclLine: [1],
+    expect(meta).toMatchObject({
+      path: '/p/math.js', hash: 'abc', stmtStartLine: [2, 6, 7], stmtEndLine: [2, 8, 7], fnDeclLine: [1], fnEndLine: [3], originalCoordinates: false,
       branchArms: [0, 0, 6, 0, 1, 6], remapped: false,
     });
   });

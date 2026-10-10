@@ -211,9 +211,9 @@ export function computeLineView(store: ResultStore, path: string, options: Parti
   // 6. Stale flags.
   const stale = store.staleInfo(path);
   const fileStale = !!fileRecord?.stale;
-  if (stale || fileStale) {
+  if (stale || fileStale || cov?.stale) {
     for (const v of lines.values()) {
-      if (fileStale || stale?.all || stale?.lines.has(v.line)) v.stale = true;
+      if (fileStale || cov?.stale || stale?.all || stale?.lines.has(v.line)) v.stale = true;
     }
   }
 

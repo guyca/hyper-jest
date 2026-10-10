@@ -14,6 +14,7 @@
  */
 import type { Logger } from '../core/logger';
 import { isEnvironmentClass, wrapEnvironment, type EnvDeps } from './envWrapper';
+import { captureTransformedSource } from './sourceCapture';
 
 export interface Seams {
   envWrapper: boolean;
@@ -75,6 +76,18 @@ export function installHooksOnPrototype(proto: any, opts: HookOptions): Omit<Sea
   const prior = hookedProtos.get(proto);
   if (prior) return { envWrapper: prior.envWrapper, probeTransformer: prior.probeTransformer };
   const seams: Seams = { envWrapper: false, probeTransformer: false, cachePrune: false };
+
+  // These entry points return originalCode even on memory/disk cache hits. Observing the result
+  // does not change transform output or cache keys, and also works with live comments disabled.
+  for (const name of ['transform', 'transformAsync', 'transformSource', 'transformSourceAsync']) {
+    const original = proto?.[name];
+    if (typeof original !== 'function') continue;
+    proto[name] = function(this: unknown, filename: string, ...args: unknown[]) {
+      const result = original.call(this, filename, ...args);
+      const capture = (value: unknown) => { captureTransformedSource(filename, value); return value; };
+      return result && typeof result.then === 'function' ? result.then(capture) : capture(result);
+    };
+  }
 
   if (proto && typeof proto.requireAndTranspileModule === 'function') {
     const orig = proto.requireAndTranspileModule;

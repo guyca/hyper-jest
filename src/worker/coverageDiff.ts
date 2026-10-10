@@ -15,6 +15,8 @@
  * Pure; the trace-mapping module is injected.
  */
 import { createHash } from 'crypto';
+import * as path from 'path';
+import { capturedSource } from './sourceCapture';
 import type { CoverageMetaMsg } from '../core/protocol';
 
 export interface IstanbulRange { start: { line: number; column: number }; end: { line: number; column: number } }
@@ -34,7 +36,7 @@ export interface IstanbulFileCoverage {
 
 export type CoverageMap = Record<string, IstanbulFileCoverage>;
 
-export interface FileSnapshot { s: Int32Array; b: Int32Array }
+export interface FileSnapshot { s: Int32Array; b: Int32Array; f: Int32Array; hash: string }
 export type CoverageSnapshot = Map<string, FileSnapshot>;
 
 /** Numeric ids of a counter object in ascending order (istanbul ids are "0".."n-1"). */
@@ -48,6 +50,13 @@ export function snapshotStatements(fc: IstanbulFileCoverage): Int32Array {
   const n = ids.length ? ids[ids.length - 1] + 1 : 0;
   const arr = new Int32Array(n);
   for (const id of ids) arr[id] = fc.s[id] | 0;
+  return arr;
+}
+
+export function snapshotFunctions(fc: IstanbulFileCoverage): Int32Array {
+  const ids = sortedIds(fc.f);
+  const arr = new Int32Array(ids.length ? ids[ids.length - 1] + 1 : 0);
+  for (const id of ids) arr[id] = fc.f[id] | 0;
   return arr;
 }
 
@@ -78,12 +87,12 @@ export function takeSnapshot(cov: CoverageMap | undefined | null): CoverageSnaps
   for (const p of Object.keys(cov)) {
     const fc = cov[p];
     if (!fc || typeof fc !== 'object' || !fc.s) continue;
-    snap.set(p, { s: snapshotStatements(fc), b: snapshotBranches(fc) });
+    snap.set(p, { s: snapshotStatements(fc), b: snapshotBranches(fc), f: snapshotFunctions(fc), hash: coverageHash(fc) });
   }
   return snap;
 }
 
-export interface FileDiff { path: string; stmts: number[] }
+export interface FileDiff { path: string; stmts: number[]; fns: number[] }
 
 /** Files whose statement counters increased since `prev`, with the increased statement ids. */
 export function diffSnapshots(prev: CoverageSnapshot, cov: CoverageMap | undefined | null): FileDiff[] {
@@ -92,10 +101,17 @@ export function diffSnapshots(prev: CoverageSnapshot, cov: CoverageMap | undefin
   for (const p of Object.keys(cov)) {
     const fc = cov[p];
     if (!fc || typeof fc !== 'object' || !fc.s) continue;
-    const stmts = increasedIds(prev.get(p)?.s, snapshotStatements(fc));
-    if (stmts.length) out.push({ path: p, stmts });
+    const before = prev.get(p);
+    const same = before?.hash === coverageHash(fc) ? before : undefined;
+    const stmts = increasedIds(same?.s, snapshotStatements(fc));
+    const fns = increasedIds(same?.f, snapshotFunctions(fc));
+    if (stmts.length || fns.length) out.push({ path: p, stmts, fns });
   }
   return out;
+}
+
+export function hitFunctions(fc: IstanbulFileCoverage): number[] {
+  return sortedIds(fc.f).filter(id => fc.f[id] > 0);
 }
 
 /** Statement ids with a non-zero counter. */
@@ -154,52 +170,72 @@ export function makeLineRemapper(inputSourceMap: unknown, tm: TraceMappingLike |
 }
 
 export type CoverageMetaBody = Omit<CoverageMetaMsg, 'v' | 'type'>;
+const metaCache = new WeakMap<object, { source: string | undefined; tm: TraceMappingLike | undefined; meta: CoverageMetaBody }>();
 
 /** Static shape of an instrumented file, remapped to original lines when a source map is available. */
 export function buildCoverageMeta(fc: IstanbulFileCoverage, tm?: TraceMappingLike): CoverageMetaBody {
-  const remap = makeLineRemapper(fc.inputSourceMap, tm);
-  const mapLine = (pos: { line: number; column: number } | undefined): number => {
-    if (!pos) return 0;
-    if (remap) {
-      const mapped = remap(pos.line, pos.column);
-      if (mapped !== undefined) return mapped;
+  const sourceText = capturedSource(fc.path);
+  const cached = metaCache.get(fc);
+  if (cached && cached.source === sourceText && cached.tm === tm) return cached.meta;
+  let reliable = true;
+  let tracer: unknown;
+  if (fc.inputSourceMap) {
+    try { tracer = tm ? new tm.TraceMap(fc.inputSourceMap) : undefined; } catch { /* conservative fallback */ }
+    if (!tracer) reliable = false;
+  }
+  const mapPosition = (pos: { line: number; column: number } | undefined): { line: number; column: number } => {
+    if (!pos || !Number.isInteger(pos.line) || pos.line < 1 || !Number.isInteger(pos.column)) {
+      reliable = false;
+      return { line: pos?.line || 0, column: pos?.column || 0 };
     }
-    return pos.line;
+    if (tracer && tm) {
+      try {
+        const mapped = tm.originalPositionFor(tracer, pos);
+        const source = mapped.source?.replace(/^file:\/\//, '');
+        const matches = source && path.resolve(path.dirname(fc.path), source) === path.resolve(fc.path);
+        if (mapped.line && mapped.column !== null && matches) return { line: mapped.line, column: mapped.column };
+        // Preserve existing display remapping, but do not narrow using partial/multi-source maps.
+        reliable = false;
+        if (mapped.line && mapped.column !== null) return { line: mapped.line, column: mapped.column };
+      } catch { reliable = false; }
+    }
+    return pos;
   };
-  const stmtStartLine: number[] = [];
-  const stmtEndLine: number[] = [];
+  const stmtStartLine: number[] = [], stmtEndLine: number[] = [];
+  const stmtStartColumn: number[] = [], stmtEndColumn: number[] = [];
   for (const id of sortedIds(fc.statementMap)) {
     const r = fc.statementMap[id];
-    stmtStartLine[id] = mapLine(r?.start);
-    stmtEndLine[id] = mapLine(r?.end) || stmtStartLine[id];
+    const start = mapPosition(r?.start), end = mapPosition(r?.end);
+    stmtStartLine[id] = start.line; stmtEndLine[id] = end.line;
+    stmtStartColumn[id] = start.column; stmtEndColumn[id] = end.column;
   }
-  const fnDeclLine: number[] = [];
+  const fnDeclLine: number[] = [], fnEndLine: number[] = [];
+  const fnDeclColumn: number[] = [], fnEndColumn: number[] = [];
   for (const id of sortedIds(fc.fnMap)) {
     const fn = fc.fnMap[id];
-    fnDeclLine[id] = mapLine(fn?.decl?.start ?? fn?.loc?.start);
+    const start = mapPosition(fn?.decl?.start ?? fn?.loc?.start), end = mapPosition(fn?.loc?.end);
+    fnDeclLine[id] = start.line; fnEndLine[id] = end.line;
+    fnDeclColumn[id] = start.column; fnEndColumn[id] = end.column;
   }
   const branchArms: number[] = [];
   for (const id of sortedIds(fc.branchMap)) {
     const br = fc.branchMap[id];
     const locs = br?.locations?.length ? br.locations : br?.loc ? [br.loc] : [];
     locs.forEach((loc, armIndex) => {
-      // `if` without else has an empty second location in istanbul 6; fall back to the branch loc.
       const start = loc?.start && typeof loc.start.line === 'number' ? loc.start : br.loc?.start;
-      branchArms.push(id, armIndex, mapLine(start));
+      branchArms.push(id, armIndex, mapPosition(start).line);
     });
   }
-  // Fill holes (non-contiguous ids) so parallel arrays stay dense.
-  for (let i = 0; i < stmtStartLine.length; i++) {
-    if (stmtStartLine[i] === undefined) { stmtStartLine[i] = 0; stmtEndLine[i] = 0; }
+  for (const array of [stmtStartLine, stmtEndLine, stmtStartColumn, stmtEndColumn, fnDeclLine, fnEndLine, fnDeclColumn, fnEndColumn]) {
+    for (let i = 0; i < array.length; i++) if (array[i] === undefined) array[i] = 0;
   }
-  for (let i = 0; i < fnDeclLine.length; i++) if (fnDeclLine[i] === undefined) fnDeclLine[i] = 0;
-  return {
-    path: fc.path,
-    hash: coverageHash(fc),
-    stmtStartLine,
-    stmtEndLine,
-    fnDeclLine,
-    branchArms,
-    remapped: !!remap,
-  };
+  const hash = coverageHash(fc);
+  // Include resolved coordinates/reliability too: two transforms can expose the same raw maps.
+  const shape = { stmtStartLine, stmtEndLine, stmtStartColumn, stmtEndColumn, fnDeclLine, fnEndLine, fnDeclColumn, fnEndColumn, branchArms };
+  const originalCoordinates = reliable && sourceText !== undefined;
+  const revision = sourceText === undefined ? undefined : createHash('sha1')
+    .update(JSON.stringify([hash, sourceText, shape, originalCoordinates])).digest('hex');
+  const meta = { path: fc.path, hash, ...shape, remapped: !!tracer, sourceText, revision, originalCoordinates };
+  metaCache.set(fc, { source: sourceText, tm, meta });
+  return meta;
 }

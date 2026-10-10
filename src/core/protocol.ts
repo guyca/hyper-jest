@@ -229,22 +229,38 @@ export interface TestResultMsg {
 /** Statement ranges a single test executed, per source file. */
 export interface TestCoverageMsg {
   v: number; type: 'testCoverage'; runId: string; path: string; testKey: string;
-  files: Array<{ path: string; /** [statementId, ...] ids whose counters increased during the test */ stmts: number[] }>;
+  files: CoverageHit[];
 }
 
+/** IDs belong exclusively to `revision`; missing revision/function data cannot prove non-execution. */
+export interface CoverageHit { path: string; revision?: string; hash?: string; stmts: number[]; fns?: number[] }
+
 /** Files loaded (module scope executed) while loading the test file, before any test ran. */
-export interface FileLoadMsg { v: number; type: 'fileLoad'; runId: string; path: string; files: string[]; }
+export interface FileLoadMsg {
+  v: number; type: 'fileLoad'; runId: string; path: string; files: string[];
+  /** Executions outside individual tests, including shared hooks. Sent cumulatively at run_finish. */
+  shared?: CoverageHit[];
+  complete?: boolean;
+}
 
 /** Static shape of one instrumented source file; sent once per (path, hash). */
 export interface CoverageMetaMsg {
   v: number; type: 'coverageMeta'; path: string; hash: string;
+  revision?: string;
+  sourceText?: string;
+  /** All coordinates refer reliably to sourceText, rather than generated or partially mapped code. */
+  originalCoordinates?: boolean;
   /** 1-based start/end line per statement id (parallel arrays), already remapped to the original file. */
   stmtStartLine: number[];
   stmtEndLine: number[];
+  stmtStartColumn?: number[];
+  stmtEndColumn?: number[];
   /** 1-based line per function declaration id. */
   fnDeclLine: number[];
   /** 1-based last line per function id (istanbul `fnMap[id].loc.end`), parallel to `fnDeclLine`. Optional; enables function-level affected narrowing. */
   fnEndLine?: number[];
+  fnDeclColumn?: number[];
+  fnEndColumn?: number[];
   /** Branch arms: [branchId, armIndex, line] triples flattened. */
   branchArms: number[];
   remapped: boolean;
@@ -253,7 +269,7 @@ export interface CoverageMetaMsg {
 /** File-level coverage after a run (hit statement ids); used in degraded mode or as the union. */
 export interface FileCoverageMsg {
   v: number; type: 'fileCoverage'; runId: string; path: string;
-  files: Array<{ path: string; hash: string; hitStmts: number[]; hitBranchArms: number[] }>;
+  files: Array<{ path: string; hash: string; revision?: string; hitStmts: number[]; hitBranchArms: number[] }>;
 }
 
 export interface ConsoleMsg {
