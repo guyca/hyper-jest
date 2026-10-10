@@ -1,5 +1,7 @@
 # HyperJest
 
+![Test line coverage](media/coverage.svg)
+
 Offline, license-free, multi-core Jest test runner for VS Code with Wallaby-style real-time feedback:
 gutter coverage indicators, inline failure messages, inline `console.log` / `//?` live values, native Test
 Explorer integration, on-type / on-save incremental runs, debugging and snapshot commands.
@@ -22,6 +24,13 @@ yarn test
 ```
 
 Fresh installs require access to the Wix package registry configured in `.yarnrc.yml`.
+
+The coverage badge refreshes automatically after each merge or push to `master`, once the unit tests
+pass. GitHub Actions commits the updated badge only when its value changes. Repository branch rules
+must allow the Actions bot to push this update to `master`.
+
+Run `yarn test:coverage` to measure line coverage across `src/` and refresh the badge locally. The
+detailed report is in `coverage/index.html`.
 
 See `CLAUDE.md` for build, update and troubleshooting commands and `WALLABY_FEATURE_ANALYSIS.md` for the
 feature research and parity mapping.
