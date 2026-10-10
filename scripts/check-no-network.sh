@@ -3,7 +3,7 @@
 # host + HyperJest workers hold no sockets. Usage: scripts/check-no-network.sh [extension-host-pid]
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[ -d dist ] || { echo "dist/ missing: run npm run build first"; exit 1; }
+[ -d dist ] || { echo "dist/ missing: run yarn build first"; exit 1; }
 echo "== static scan of dist/ for network APIs =="
 if grep -nE "require\(['\"](https?|net|dns|tls|dgram|http2)['\"]\)|\bfetch\(|XMLHttpRequest|WebSocket\(" dist/*.js dist/worker/*.cjs; then
   echo "FAIL: network API usage found"; exit 1

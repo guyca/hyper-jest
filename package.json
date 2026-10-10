@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "guyc",
   "private": true,
+  "packageManager": "yarn@4.18.0",
   "license": "MIT",
   "icon": "media/icon.png",
   "engines": { "vscode": "^1.134.0", "node": ">=22" },
@@ -179,13 +180,13 @@
   },
   "scripts": {
     "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json && tsc --noEmit -p tsconfig.test.json",
-    "build": "npm run type-check && node esbuild.mjs --production",
+    "build": "yarn type-check && node esbuild.mjs --production",
     "build:dev": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "test": "jest",
     "test:it": "HYPERJEST_IT=1 jest tests/integration",
-    "package": "npm run build && vsce package --no-dependencies --no-yarn --skip-license --allow-missing-repository --no-rewrite-relative-links -o hyperjest.vsix",
-    "install-extension": "npm run package && code --install-extension hyperjest.vsix --force && echo 'Installed. Reload VS Code: Cmd+Shift+P -> Developer: Reload Window'",
+    "package": "yarn build && vsce package --no-dependencies --skip-license --allow-missing-repository --no-rewrite-relative-links -o hyperjest.vsix",
+    "install-extension": "yarn package && code --install-extension hyperjest.vsix --force && echo 'Installed. Reload VS Code: Cmd+Shift+P -> Developer: Reload Window'",
     "check:no-network": "bash scripts/check-no-network.sh"
   },
   "devDependencies": {

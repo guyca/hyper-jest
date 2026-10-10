@@ -9,7 +9,7 @@ feature research and parity mapping.
 ## Hard rules
 
 - **Zero network at runtime.** No telemetry, update checks, license checks, `fetch`, `http(s)`, `net`,
-  `dns`, `tls`, `WebSocket`. `npm run check:no-network` greps `dist/` for these and can `lsof` a running
+  `dns`, `tls`, `WebSocket`. `yarn check:no-network` greps `dist/` for these and can `lsof` a running
   extension host.
 - **Never load Jest in the extension host.** Jest, Babel, ts-jest and project configs are loaded only inside
   worker processes (`src/worker/*`) or spawned CLI processes. Loading a config in the host would run
@@ -22,34 +22,39 @@ feature research and parity mapping.
   with Jest (`tests/unit`). Only `src/*.ts` and `src/discovery/*`, `src/results/*` UI files may import `vscode`.
 - **Never bundle Jest/Babel into the worker bundles.** `esbuild.mjs` bundles only HyperJest code (plus
   `@babel/parser` for static test discovery); every Jest module is `require`d at runtime by absolute path.
-- Never run `npx` (it may reach the network). Use the local `node_modules/.bin` via npm scripts.
+- Never run `npx` (it may reach the network). Use the local `node_modules/.bin` via Yarn scripts.
 - Only `@types/vscode` ≤ `engines.vscode` (major.minor) is accepted by vsce. Bump both together.
 
 ## Toolchain
 
-- Node ≥ 22 (this machine: `fnm use 24.19.0`), npm 11. Dependencies are exact-pinned in `package.json`.
-- `.npmrc`: `registry=https://npm.dev.wixpress.com/` (the public registry is blocked here), `save-exact`,
-  `ignore-scripts` (esbuild's binary comes from the optional `@esbuild/darwin-arm64` package, keytar's network
-  postinstall never runs), no audit/fund/update-notifier.
+- Node ≥ 22 (this machine: `fnm use 24.19.0`), Yarn 4.18.0 pinned in `package.json` via Corepack.
+  Dependencies are exact-pinned in `package.json`; commit `yarn.lock` for reproducible installs.
+- `.yarnrc.yml`: `nodeLinker: node-modules`, `npmRegistryServer: https://npm.dev.wixpress.com/`
+  (the public registry is blocked here), `defaultSemverRangePrefix: ""`, `enableScripts: false`,
+  `enableTelemetry: false`. esbuild's binary comes from the optional `@esbuild/darwin-arm64` package;
+  keytar's network postinstall never runs.
 - Installing/building **may** use the Wix registry. Using the installed `.vsix` never does.
 
 ## Commands
 
 ```bash
-npm install                 # one-time (or after changing package.json) — needs the Wix registry
-npm run build               # type-check (host, worker and test tsconfigs) + production bundles into dist/
-npm run build:dev           # fast dev bundles with source maps
-npm run watch               # rebuild on change (used by .vscode/launch.json "Run HyperJest (dev host)")
-npm test                    # HyperJest's own unit tests (jest 29.7 + ts-jest, ~420 tests, no vscode)
-npm run test:it             # gated integration tests: real jest 29.7 driven through the worker/reporter
-npm run package             # build + vsce package -> hyperjest.vsix (no network needed by vsce flags)
-npm run install-extension   # package + code --install-extension hyperjest.vsix --force
-npm run check:no-network    # static scan of dist/ (+ lsof of a running extension host when given a pid)
+corepack enable             # one-time: enable the Yarn shim
+COREPACK_NPM_REGISTRY=https://npm.dev.wixpress.com corepack install # download the pinned Yarn version
+yarn install --immutable    # install exactly yarn.lock — needs the Wix registry on a fresh cache
+yarn build                  # type-check (host, worker and test tsconfigs) + production bundles into dist/
+yarn build:dev              # fast dev bundles with source maps
+yarn watch                  # rebuild on change (used by .vscode/launch.json "Run HyperJest (dev host)")
+yarn test                   # HyperJest's own unit tests (jest 29.7 + ts-jest, ~420 tests, no vscode)
+yarn test:it                # gated integration tests: real jest 29.7 driven through the worker/reporter
+yarn package                # build + vsce package -> hyperjest.vsix (no network needed by vsce flags)
+yarn install-extension      # package + code --install-extension hyperjest.vsix --force
+yarn check:no-network       # static scan of dist/ (+ lsof of a running extension host when given a pid)
 ```
 
-Rebuilding offline later: `npm ci --offline` works while `~/.npm/_cacache` still has the tarballs; otherwise
-symlink the dependency closure from `/Users/guyc/workspace1/mobile-apps-relops-automations/node_modules`
-(same versions of vsce, esbuild, typescript, @types/vscode, jest, ts-jest).
+Rebuilding offline later: `YARN_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache` works
+once Corepack has the pinned Yarn release and Yarn's cache has the required packages. Run
+`yarn install --immutable` online first to populate the cache for your platform. Builds and tests use
+local dependencies; Yarn does not run dependency postinstall scripts.
 
 Install into VS Code: `code --install-extension hyperjest.vsix --force`, then **Developer: Reload Window**.
 
@@ -93,8 +98,10 @@ Host forks `dist/worker/hyperjestWorker.cjs` with the project's node, `cwd = pac
 
 ## Adding or updating a dependency
 
-1. Online: `npm install <pkg>@<exact>` (save-exact is on). 2. Run `npm run build && npm test`. 3. Commit
-`package.json` + `package-lock.json`. For `@types/vscode`, bump `engines.vscode` to the same major.minor.
+1. Online: `yarn add --dev <pkg>@<exact>` (new versions are saved without a range prefix).
+2. Run `yarn build && yarn test`. 3. Commit `package.json` + `yarn.lock`.
+If editing dependency entries by hand, run `yarn install` to update the lockfile before verifying
+with `yarn install --immutable`. For `@types/vscode`, bump `engines.vscode` to the same major.minor.
 Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist/worker/*.cjs` (expect 0).
 
 ## Troubleshooting (all offline)
@@ -106,7 +113,7 @@ Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist
   Report** puts the same text on the clipboard.
 - **HyperJest: Show Resolved Jest Config** — the ProjectSpec, Jest's `--showConfig` output and the exact shell
   command HyperJest runs. Paste that command in a terminal to compare with plain Jest.
-- **From a terminal, without VS Code** (after `npm run build:dev`):
+- **From a terminal, without VS Code** (after `yarn build:dev`):
   ```bash
   node scripts/worker-driver.mjs init --pkg <packageDir> [-c <config>] [--node <node>] [--env K=V]
   node scripts/worker-driver.mjs run <test file> --pkg <packageDir> --repeat 2
@@ -146,16 +153,16 @@ Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist
 
 ## Verification checklist (before a release)
 
-1. `npm run build && npm test && npm run test:it` green.
-2. `npm run package`; `code --install-extension hyperjest.vsix --force`; reload.
+1. `yarn build && yarn test && yarn test:it` green.
+2. `yarn package`; `code --install-extension hyperjest.vsix --force`; reload.
 3. With Wi-Fi off: open `mobile-apps-relops-automations/.../tests/unit/jsonlWriter.test.ts` → green squares in the
    spec and in `src/**/jsonlWriter.ts`; break an `expect` → red line + Problems entry; `console.log` inline;
    Debug Line Test hits a breakpoint; Update Test Snapshots writes `__snapshots__`.
 4. Same on `delay-of-game` (jest 30.5.2, `@jest-environment` docblocks), `mobile-apps-engine` (30.4.2, RN) and a
    `mobile-modules` shono package. `branded-apps` shows `unavailable` with the yarn hint; `appium-tests` is ignored.
-5. `npm run check:no-network <extension host pid>` → no sockets from HyperJest or its workers.
+5. `yarn check:no-network <extension host pid>` → no sockets from HyperJest or its workers.
 
 ## Release steps
 
-`npm version patch` (updates `package.json`), update `CHANGELOG.md`, `npm run package`, test the `.vsix` on one
-repo, commit `package.json`, `package-lock.json`, `CHANGELOG.md`, docs; distribute `hyperjest.vsix`.
+`yarn version patch` (updates `package.json` and `yarn.lock`), update `CHANGELOG.md`, `yarn package`, test the `.vsix` on one
+repo, commit `package.json`, `yarn.lock`, `CHANGELOG.md`, docs; distribute `hyperjest.vsix`.
