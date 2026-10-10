@@ -1,0 +1,1 @@
+{"name":"config-project","private":true,"scripts":{"test":"jest --testPathIgnorePatterns=tests/integration","test:integration":"jest --config jest.integration.config.js"},"devDependencies":{"jest":"^29.7.0"}}

@@ -6,6 +6,7 @@
  */
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
+import { scopeMatches } from './core/hyperConfig';
 import type { Logger } from './core/logger';
 import { createNdjsonSplitter, toWorkerToHost } from './core/cliEvents';
 import { buildFindRelatedSpec, buildRunSpec, type RunSpecProject } from './core/runSpec';
@@ -53,11 +54,13 @@ const EXIT_CLOSE_GRACE_MS = 2000;
 
 /** Starts a CLI run; results stream through `onMessage` as protocol messages. */
 export function runCli(req: CliRunRequest): CliRunHandle {
+  const tests = req.tests.filter(t => !req.spec.scope || scopeMatches(t.path, req.spec.scope.baseDir, req.spec.scope.tests));
+  if (!tests.length) return { cancel() {}, done: Promise.resolve({ wasInterrupted: false, exitCode: 0 }) };
   const overlayManifestPath = writeOverlayManifest(req.runId, req.overlay);
   const spec = buildRunSpec({
     project: toRunSpecProject(req.spec),
     workerAssetsDir: req.workerAssetsDir,
-    tests: req.tests,
+    tests,
     updateSnapshot: req.updateSnapshot,
     runId: req.runId,
     coverage: req.coverage ? { directory: path.join(runArtifactsDir(req.runId), 'coverage') } : undefined,
@@ -162,7 +165,7 @@ export function findRelatedTests(spec: ProjectSpec, sources: string[], runId: st
       try {
         const arr = line ? (JSON.parse(line) as unknown) : [];
         if (!line && code !== 0) log.warn(`findRelatedTests ${runId}: jest exited with code ${code}${stderr ? `: ${stderr.trim().split('\n').slice(-5).join('\n')}` : ''}`);
-        settle(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : []);
+        settle(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string' && (!spec.scope || scopeMatches(x, spec.scope.baseDir, spec.scope.tests))) : []);
       } catch {
         settle([]);
       }

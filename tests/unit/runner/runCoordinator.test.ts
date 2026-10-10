@@ -56,11 +56,16 @@ function setup(overrides: Partial<HyperJestSettings> = {}) {
     killProject: jest.fn(),
     broadcast: jest.fn(),
   };
+  const entry = { spec };
   const registry = {
     onDidChange: () => ({ dispose() { /* noop */ } }),
     projectIdFor: (p: string) => (p.startsWith('/repo/pkg/') ? PID : undefined),
-    get: (id: string) => (id === PID ? { spec } : undefined),
-    projectFor: () => ({ spec }),
+    get: (id: string) => (id === PID ? entry : undefined),
+    projectFor: () => entry,
+    projectsFor: (p: string) => p.startsWith('/repo/pkg/') ? [entry] : [],
+    resolveMatchers: async () => undefined,
+    acceptsTest: () => true,
+    monitorsSource: () => true,
     all: () => [{ spec }],
     refresh: async () => undefined,
     setAutoBoot: jest.fn(),

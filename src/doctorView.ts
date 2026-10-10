@@ -16,6 +16,8 @@ export interface DoctorPackage {
   status: ProjectSpec['status'] | 'e2e' | 'notTest';
   reason?: string;
   configArg?: string;
+  configFile?: string;
+  selected?: boolean;
   jestVersion?: string;
   jestPkgDir?: string;
   nodePath?: string;
@@ -77,7 +79,8 @@ export function renderDoctorReport(r: DoctorReport): string {
   for (const p of [...r.packages].sort((a, b) => a.packageDir.localeCompare(b.packageDir))) {
     out.push(`### ${p.displayName} — ${p.status}`, '');
     out.push(`- Package: ${code(p.packageDir)}`);
-    out.push(`- Flavor: ${p.flavor}${p.configArg ? ` (config ${code(p.configArg)})` : ''}`);
+    out.push(`- Flavor: ${p.flavor}${p.configArg ? ` (config ${code(p.configArg)})` : ''}${p.selected === false ? ' — not selected' : ''}`);
+    if (p.configFile) out.push(`- HyperJest config: ${code(p.configFile)}`);
     if (p.reason) out.push(`- Reason: ${p.reason}`);
     out.push(`- Jest: ${p.jestVersion ? `${p.jestVersion} at ${code(p.jestPkgDir)}` : 'not resolved'}`);
     out.push(`- Node: ${p.nodeVersion ? `${p.nodeVersion} (${code(p.nodePath)}${p.nodeSource ? `, from ${p.nodeSource}` : ''})` : 'not resolved'}`);

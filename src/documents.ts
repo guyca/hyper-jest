@@ -25,7 +25,7 @@ export class DocumentIndex {
 
   parsed(path: string): ParsedFile | undefined { return this.entries.get(path)?.parsed; }
   text(path: string): string | undefined { return this.entries.get(path)?.text; }
-  baseline(path: string): Entry | undefined { return this.runBaseline.get(path); }
+  baseline(path: string, projectId: string): Entry | undefined { return this.runBaseline.get(`${projectId}\0${path}`); }
 
   /** Parses `text` (if it changed) and returns the ParsedFile. */
   update(path: string, text: string): ParsedFile {
@@ -61,14 +61,18 @@ export class DocumentIndex {
   }
 
   /** Records the current parse as the baseline for the next change analysis. */
-  markRunBaseline(path: string): void {
+  markRunBaseline(path: string, projectId: string): void {
     const e = this.entries.get(path);
-    if (e) this.runBaseline.set(path, e);
+    if (e) this.runBaseline.set(`${projectId}\0${path}`, e);
+  }
+
+  clearProject(projectId: string): void {
+    for (const key of this.runBaseline.keys()) if (key.startsWith(`${projectId}\0`)) this.runBaseline.delete(key);
   }
 
   forget(path: string): void {
     this.entries.delete(path);
-    this.runBaseline.delete(path);
+    for (const key of this.runBaseline.keys()) if (key.endsWith(`\0${path}`)) this.runBaseline.delete(key);
     this.lastWithNodes.delete(path);
   }
 }

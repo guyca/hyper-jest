@@ -16,6 +16,7 @@ import { resetSourceCapture } from './sourceCapture';
  * No static Jest imports; everything comes from the chain.
  */
 import * as path from 'path';
+import { scopeMatches } from '../core/hyperConfig';
 import type { Logger } from '../core/logger';
 import {
   makeTestKey,
@@ -469,7 +470,7 @@ export class WarmEngine {
         if (watcher.isInterrupted()) break;
         const testPath = path.resolve(sel.path);
         const index = matchConfigIndex(this.matchers, testPath);
-        if (index < 0) {
+        if (index < 0 || (this.init.spec.scope && !scopeMatches(testPath, this.init.spec.scope.baseDir, this.init.spec.scope.tests))) {
           this.send({ type: 'fileResult', runId, path: testPath, status: 'notMatched', numPassing: 0, numFailing: 0, numPending: 0, numTodo: 0 });
           continue;
         }
@@ -709,7 +710,9 @@ export class WarmEngine {
       throw e;
     }
     this.log.debug(`dependency graph: ${this.graphCache.forward.size} files, ${this.graphCache.testFiles.size} test files in ${Date.now() - t0} ms`);
-    this.send({ type: 'graphResult', ...toGraphResult(this.graphCache) });
+    const graph = toGraphResult(this.graphCache);
+    if (this.init.spec.scope) graph.testFiles = graph.testFiles.filter(f => scopeMatches(f, this.init.spec.scope!.baseDir, this.init.spec.scope!.tests));
+    this.send({ type: 'graphResult', ...graph });
   }
 
   showConfig(): void {
@@ -722,7 +725,7 @@ export class WarmEngine {
     for (let i = 0; i < this.configs.length; i++) {
       const context = await this.getContext(i);
       const search = new this.chain.modules.core.SearchSource(context);
-      for (const f of context.hasteFS.getAllFiles() as string[]) if (search.isTestFilePath(f)) files.add(f);
+      for (const f of context.hasteFS.getAllFiles() as string[]) if (search.isTestFilePath(f) && (!this.init.spec.scope || scopeMatches(f, this.init.spec.scope.baseDir, this.init.spec.scope.tests))) files.add(f);
     }
     this.send({ type: 'listTestsResult', files: [...files].sort() });
   }

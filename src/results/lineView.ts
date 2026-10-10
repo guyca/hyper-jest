@@ -115,13 +115,14 @@ export function computeLineView(store: ResultStore, path: string, options: Parti
 
   // 2. Error sources (frames of failing tests, anywhere in the store, that point into this file).
   const errorEntries: Array<{ line: number; entry: InlineEntry; key?: string }> = [];
-  const noteError = (line: number, failure: FailureInfo, testKey: string | undefined, runId: string): void => {
+  const noteError = (line: number, failure: FailureInfo, testKey: string | undefined, runId: string, projectId = testKey ? parseTestKey(testKey).projectId : undefined): void => {
     if (line < 0) return;
     addState(line, 'errorSource');
     const v = lineAt(line);
     if (testKey && !v.failingTests.includes(testKey)) v.failingTests.push(testKey);
-    if (opts.showErrors && !errorEntries.some(e => e.line === line && e.key === testKey && e.entry.longText === failure.message)) {
-      errorEntries.push({ line, key: testKey, entry: { kind: 'error', text: firstLine(failure.message), longText: failure.message, testKey, runId } });
+    const prefix = projectId && new Set(store.allFiles().map(f => f.projectId)).size > 1 ? `[${store.projectLabel(projectId)}] ` : '';
+    if (opts.showErrors && !errorEntries.some(e => e.line === line && e.key === testKey && e.entry.longText === prefix + failure.message)) {
+      errorEntries.push({ line, key: testKey, entry: { kind: 'error', text: prefix + firstLine(failure.message), longText: prefix + failure.message, testKey, runId } });
     }
   };
   for (const t of failing) {
@@ -142,12 +143,12 @@ export function computeLineView(store: ResultStore, path: string, options: Parti
     }
     if (t.failures.length === 0 && t.path === path && t.location) addState(runLine(t.location.line - 1), 'errorSource');
   }
-  if (fileRecord?.testExecError) {
-    const exec = fileRecord.testExecError;
+  for (const record of store.allFiles().filter(f => f.path === path && f.testExecError)) {
+    const exec = record.testExecError!;
     const inFile = exec.frames.filter(fr => fr.file === path);
     for (const fr of inFile) addState(runLine(fr.line - 1), 'errorSource');
-    if (inFile.length > 0) noteError(runLine(inFile[0].line - 1), exec, undefined, fileRecord.lastRunId ?? '');
-    else if (fileRecord.path === path) noteError(0, exec, undefined, fileRecord.lastRunId ?? '');
+    if (inFile.length > 0) noteError(runLine(inFile[0].line - 1), exec, undefined, record.lastRunId ?? '', record.projectId);
+    else noteError(0, exec, undefined, record.lastRunId ?? '', record.projectId);
   }
 
   // 3. Spec-file fallbacks when the test file itself is not instrumented: a failing test's body is
@@ -305,7 +306,10 @@ export interface MatchResult {
  */
 export function matchRecordsToNodes(parsed: ParsedFile, records: readonly TestRecord[], ids: ReconcileIds = { projectId: '', relPath: parsed.path }): MatchResult {
   const ordered = orderForReconcile(records);
-  const reconciled = reconcile(parsed, ordered, ids);
+  const groups = new Map<string, TestRecord[]>();
+  for (const record of ordered) { const group = groups.get(record.projectId) ?? []; group.push(record); groups.set(record.projectId, group); }
+  const reconciled = new Map<string, ReconciledTest>();
+  for (const [projectId, group] of groups) for (const [key, match] of reconcile(parsed, group, groups.size > 1 ? { ...ids, projectId } : ids)) reconciled.set(key, match);
   const byNode = new Map<ParsedNode, TestRecord[]>();
   const byKey = new Map<string, NodeMatch>();
   const unmatched: TestRecord[] = [];

@@ -132,7 +132,7 @@ describe('discoverProjects: engine-like repo', () => {
   it('creates one spec per script config, flags the nested detox config and ignores the default jest.config.js', () => {
     const mine = specs.filter(s => s.packageDir === eng);
     expect(mine.map(s => `${s.flavor}/${s.status}/${s.configArg?.replace(eng + '/', '')}`).sort()).toEqual([
-      'implicit/notJest/e2e/jest.config.js', 'script-config/ok/jest.integration.config.js', 'script-config/ok/jest.unit.config.js',
+      'implicit/notJest/e2e/jest.config.js', 'implicit/ok/jest.config.js', 'script-config/ok/jest.integration.config.js', 'script-config/ok/jest.unit.config.js',
     ]);
     const unit = by(specs, eng, s => s.configArg?.endsWith('jest.unit.config.js') ?? false)!;
     expect(unit).toMatchObject({ displayName: '@wix/engine · jest.unit.config.js', jestVersion: '30.4.2', jestPkgDir: '/eng/node_modules/jest', nodeVersion: 'v24.15.0', cliFilters: { testPathIgnorePatterns: [] } });
@@ -175,7 +175,7 @@ describe('discoverProjects: shono packages', () => {
   it('lets shono win over implicit configs and carries env, node args and the chain-resolved jest', () => {
     const fs = mobileModulesFs();
     const { specs, skipped } = run(fs, allPkgJsons(fs), {}, { env: { PATH: `${MULTISHELL}`, NODE_PATH: '/host/np' } });
-    const mv = by(specs, '/mm/packages/modules/mv')!;
+    const mv = by(specs, '/mm/packages/modules/mv', s => s.selected !== false)!;
     expect(mv).toMatchObject({
       flavor: 'shono', status: 'ok', displayName: '@wix/mv · shono', repoRoot: '/mm',
       configArg: '/mm/node_modules/@wix/shono/node_modules/@wix/shono-testjs/dist/src/jestConfig.js',
@@ -193,11 +193,11 @@ describe('discoverProjects: shono packages', () => {
   it('falls back to implicit resolution when shono is disabled or preferScriptConfigs is off', () => {
     const fs = mobileModulesFs();
     const disabled = run(fs, ['/mm/packages/modules/mv/package.json'], { shono: { enabled: false } });
-    const mv = disabled.specs[0];
+    const mv = disabled.specs.find(s => s.selected)!;
     expect(mv).toMatchObject({ flavor: 'implicit', status: 'ok', configArg: '/mm/packages/modules/mv/jest.config.js' });
     expect(mv.warnings).toEqual([expect.stringMatching(/hyperjest.shono.enabled is false/), expect.stringMatching(/multipleConfigs/)]);
     const noPrefer = run(fs, ['/mm/packages/modules/mv/package.json'], { discovery: { ...DEFAULT_SETTINGS.discovery, preferScriptConfigs: false } });
-    expect(noPrefer.specs[0]).toMatchObject({ flavor: 'implicit', warnings: [expect.stringMatching(/preferScriptConfigs is false/), expect.stringMatching(/multipleConfigs/)] });
+    expect(noPrefer.specs.find(s => s.selected)).toMatchObject({ flavor: 'implicit', configArg: '/mm/packages/modules/mv/jest.config.js', warnings: expect.arrayContaining([expect.stringMatching(/preferScriptConfigs is false/)]) });
   });
 
   it('marks a package unavailable when the shono chain is missing', () => {
@@ -246,8 +246,8 @@ describe('discoverProjects: degraded and overridden packages', () => {
       env: { A: '0', B: '2' },
       nodeArgs: ['--no-warnings'],
     }, { workspaceFolders: ['/w/relops'] }).specs;
-    expect(over).toHaveLength(1);
-    expect(over[0]).toMatchObject({ flavor: 'override', status: 'ok', configArg: `${agent}/custom.config.js`, displayName: 'agent · custom.config.js', env: { A: '1', B: '2' }, nodeArgs: ['--no-warnings'], nodePath: fnm('22.17.0'), nodeVersion: 'v22.17.0' });
+    expect(over.filter(s => s.selected)).toHaveLength(1);
+    expect(over.find(s => s.selected)).toMatchObject({ flavor: 'override', status: 'ok', configArg: `${agent}/custom.config.js`, displayName: 'agent · custom.config.js', env: { A: '1', B: '2' }, nodeArgs: ['--no-warnings'], nodePath: fnm('22.17.0'), nodeVersion: 'v22.17.0' });
   });
 
   it('turns script env prefixes into env / nodeArgs with shell expansion', () => {
@@ -292,5 +292,61 @@ describe('discoverProjectsAsync', () => {
     await discoverProjectsAsync({ ...base, exec: syncExec, execAsync, nodeVersionCache: cache });
     expect(execAsync).not.toHaveBeenCalled();
     expect(syncExec.calls).toHaveLength(0);
+  });
+});
+
+
+describe('HyperJest configuration selection', () => {
+  const agent = '/w/relops/packages/agent';
+  const file = `${agent}/hyperjest.config.js`;
+  const native = { config: { jestConfig: './jest.config.js', tests: ['tests/unit/**/*.test.ts'] } };
+  it('selects the main script by default and keeps integration available but inactive', () => {
+    const specs = run(relopsFs(), [`${agent}/package.json`]).specs;
+    expect(specs.filter(s => s.selected).map(s => s.configKey)).toEqual(['jest.config.js']);
+    expect(specs.find(s => s.configKey === 'jest.integration.config.js')?.selected).toBe(false);
+  });
+  it('breaks script priority ties by command order, including implicit configs', () => {
+    for (const first of [true, false]) {
+      const fs = relopsFs();
+      fs.write(`${agent}/package.json`, pkgJson({ name: 'agent', scripts: { test: first ? 'jest && jest -c jest.integration.config.js' : 'jest -c jest.integration.config.js && jest' } }));
+      const selected = run(fs, [`${agent}/package.json`]).specs.filter(s => s.selected);
+      expect(selected.map(s => s.configKey)).toEqual([first ? 'jest.config.js' : 'jest.integration.config.js']);
+    }
+  });
+  it('keeps a missing primary script config unavailable instead of selecting another config', () => {
+    const fs = relopsFs();
+    fs.write(`${agent}/package.json`, pkgJson({ name: 'agent', scripts: { test: 'jest -c missing.js', 'test:integration': 'jest -c jest.integration.config.js' } }));
+    expect(run(fs, [`${agent}/package.json`]).specs.filter(s => s.selected)).toEqual([expect.objectContaining({ configKey: 'missing.js', status: 'unavailable' })]);
+  });
+  it('lists a config only once when scripts reference it both implicitly and explicitly', () => {
+    const fs = relopsFs();
+    fs.write(`${agent}/package.json`, pkgJson({ name: 'agent', scripts: { test: 'FIRST=yes jest && SECOND=yes jest -c jest.config.js' } }));
+    const specs = run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configFiles: ['jest.config.js'] }] }).specs;
+    expect(specs.filter(s => s.configKey === 'jest.config.js')).toHaveLength(1);
+    expect(specs.find(s => s.selected)?.env).toMatchObject({ FIRST: 'yes' });
+  });
+  it('selects the native default and keeps its identity separate from the underlying Jest config', () => {
+    const fs = relopsFs(); fs.write(file, 'module.exports = {}');
+    const specs = run(fs, [`${agent}/package.json`], {}, { hyperConfigs: { [file]: native } }).specs;
+    const selected = specs.filter(s => s.selected);
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toMatchObject({ configFile: file, configArg: `${agent}/jest.config.js`, scope: { baseDir: agent, tests: native.config.tests } });
+    expect(selected[0].id).toBe(computeSpecId(agent, file));
+  });
+  it('honors explicit multiple/empty selections, disabled packages and legacy pins', () => {
+    const fs = relopsFs(); fs.write(file, 'module.exports = {}');
+    for (const configFiles of [['hyperjest.config.js', 'jest.integration.config.js'], []]) {
+      const specs = run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configFiles, configArg: 'jest.config.js' }] }, { hyperConfigs: { [file]: native } }).specs;
+      expect(specs.filter(s => s.selected).map(s => s.configKey).sort()).toEqual([...configFiles].sort());
+    }
+    expect(run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, disabled: true, configFiles: ['hyperjest.config.js'] }] }).specs.every(s => s.status === 'disabled')).toBe(true);
+    expect(run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configArg: 'jest.integration.config.js' }] }).specs.filter(s => s.selected).map(s => s.configKey)).toEqual(['jest.integration.config.js']);
+  });
+  it('does not fall back from a malformed default or a missing selected config', () => {
+    const fs = relopsFs(); fs.write(file, 'broken');
+    const invalid = run(fs, [`${agent}/package.json`], {}, { hyperConfigs: { [file]: { error: 'Invalid scope' } } }).specs.filter(s => s.selected);
+    expect(invalid).toHaveLength(1); expect(invalid[0]).toMatchObject({ status: 'unavailable', reason: 'Invalid scope' });
+    const missing = run(fs, [`${agent}/package.json`], { projects: [{ packageDir: agent, configFiles: ['missing.js'] }] }).specs.filter(s => s.selected);
+    expect(missing).toHaveLength(1); expect(missing[0]).toMatchObject({ status: 'unavailable', configKey: 'missing.js' });
   });
 });

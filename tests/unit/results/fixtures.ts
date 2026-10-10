@@ -30,7 +30,7 @@ export const T = {
 };
 
 export function key(fullName: string, dup = 0, path = SPEC): string {
-  return makeTestKey(path, fullName, dup);
+  return makeTestKey(path, fullName, dup, PROJECT);
 }
 
 export function fileStart(runId: string, path = SPEC): FileStartMsg {

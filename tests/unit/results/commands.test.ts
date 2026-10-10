@@ -59,6 +59,7 @@ function setup(opts: { projects?: ProjectOverride[]; entries?: any[] } = {}) {
   const runnerCalls: Array<[string, unknown]> = [];
   const handles: { next: any } = { next: { runId: 'g1', done: Promise.resolve({ wasInterrupted: false }) } };
   const runner: any = {
+    runProject: async (id: string) => { runnerCalls.push(['runProject', id]); return handles.next; },
     runFiles: async (sels: unknown) => { runnerCalls.push(['runFiles', sels]); return handles.next; },
     updateSnapshots: async (scope: unknown) => { runnerCalls.push(['updateSnapshots', scope]); },
     runTests: async (keys: unknown) => { runnerCalls.push(['runTests', keys]); },
@@ -71,6 +72,7 @@ function setup(opts: { projects?: ProjectOverride[]; entries?: any[] } = {}) {
     all: () => entries,
     get: (id: string) => entries.find(e => e.spec.id === id),
     projectFor: (p: string) => entries.find(e => p.startsWith(e.spec.packageDir)),
+    projectsFor: (p: string) => entries.filter(e => p.startsWith(e.spec.packageDir) && e.spec.selected !== false),
     isTestFile: (p: string) => p.endsWith('.test.js'),
     clearConfigCache: jest.fn(),
   };
@@ -197,45 +199,37 @@ describe('Clear Caches', () => {
   });
 });
 
-describe('Select Jest Project for Current File', () => {
+describe('Select Configurations', () => {
   const unit = { spec: spec('unit', '/repo/pkg', '/repo/pkg/jest.config.js') };
   const integ = { spec: spec('integ', '/repo/pkg', '/repo/pkg/jest.integration.config.js') };
 
-  it('pins only the file\'s own package, replacing an earlier pin and keeping its other fields', async () => {
+  it('saves multiple configs and replaces a legacy pin while preserving overrides', async () => {
     const t = setup({ entries: [unit, integ], projects: [{ packageDir: '/repo/pkg', configArg: 'old.config.js', env: { A: '1' } }, { packageDir: '/repo/other', disabled: true }] });
-    v.window.activeTextEditor = specEditor();
-    v.window.showQuickPick.mockImplementation(async (items: any[]) => items.find(i => i.e === integ));
-    v.window.showWarningMessage.mockImplementation(async () => 'Pin');
-    await run('hyperjest.selectProjectForFile');
-    expect(v.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('unit'), { modal: true }, 'Pin');
+    v.window.showQuickPick.mockImplementation(async (items: any[]) => items);
+    await run('hyperjest.selectConfigurations');
+    expect(v.window.showQuickPick).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ canPickMany: true }));
     expect(t.updates).toEqual([['projects', [
       { packageDir: '/repo/other', disabled: true },
-      { packageDir: '/repo/pkg', configArg: '/repo/pkg/jest.integration.config.js', env: { A: '1' } },
+      { packageDir: '/repo/pkg', configFiles: ['jest.config.js', 'jest.integration.config.js'], env: { A: '1' } },
     ]]]);
   });
 
-  it('does nothing without confirmation and offers to remove an existing pin', async () => {
+  it('keeps selection on cancel and saves an explicit empty selection through the legacy alias', async () => {
     const t = setup({ entries: [unit, integ] });
-    v.window.activeTextEditor = specEditor();
-    v.window.showQuickPick.mockImplementation(async (items: any[]) => items.find(i => i.e === integ));
-    await run('hyperjest.selectProjectForFile');
+    v.window.showQuickPick.mockResolvedValue(undefined);
+    await run('hyperjest.selectConfigurations');
     expect(t.updates).toEqual([]);
-
-    const pinned = setup({ entries: [{ spec: { ...unit.spec, flavor: 'override' } }], projects: [{ packageDir: '/repo/pkg', configArg: '/repo/pkg/jest.config.js' }] });
-    v.window.showInformationMessage.mockImplementation(async () => 'Remove Pin');
+    v.window.showQuickPick.mockResolvedValue([]);
     await run('hyperjest.selectProjectForFile');
-    expect(pinned.updates).toEqual([['projects', []]]);
+    expect(t.updates).toEqual([['projects', [{ packageDir: '/repo/pkg', configFiles: [] }]]]);
   });
 
-  it('refuses to pin shono projects', async () => {
+  it('selects shono without converting it into an environment-losing configArg pin', async () => {
     const shono = { spec: spec('shono', '/repo/pkg', '/repo/shono/jestConfig.js', 'shono') };
     const t = setup({ entries: [unit, shono] });
-    v.window.activeTextEditor = specEditor();
-    v.window.showQuickPick.mockImplementation(async (items: any[]) => items.find(i => i.e === shono));
-    v.window.showWarningMessage.mockImplementation(async () => 'Pin');
-    await run('hyperjest.selectProjectForFile');
-    expect(t.updates).toEqual([]);
-    expect(v.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('cannot be pinned'));
+    v.window.showQuickPick.mockImplementation(async (items: any[]) => items.filter(i => i.spec.id === 'shono'));
+    await run('hyperjest.selectConfigurations');
+    expect(t.updates).toEqual([['projects', [{ packageDir: '/repo/pkg', configFiles: ['../shono/jestConfig.js'] }]]]);
   });
 
   it('matches relative and absolute override dirs', () => {
