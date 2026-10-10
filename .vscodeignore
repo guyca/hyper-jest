@@ -7,7 +7,9 @@ node_modules/**
 esbuild.mjs
 jest.config.js
 tsconfig*.json
-.npmrc
+.yarn/**
+.yarnrc.yml
+yarn.lock
 .gitignore
 **/*.map
 **/*.ts
