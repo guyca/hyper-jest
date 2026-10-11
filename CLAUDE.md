@@ -96,7 +96,7 @@ Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist
 
 ## Coverage badge
 
-Run `yarn test:coverage` to measure line coverage across `src/` and refresh `media/coverage.svg` locally.
+Run `yarn test:coverage` to measure line coverage across `src/` and refresh `.github/media/coverage.svg` locally.
 The detailed report is in `coverage/index.html`. On a push to `master` (or a manual workflow run),
 GitHub Actions runs the tests and commits the badge only if it changed. Branch rules must allow the
 Actions bot to push the badge update to `master`.

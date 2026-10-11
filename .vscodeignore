@@ -1,5 +1,5 @@
 .vscode/**
-.github/**
+.github/workflows/**
 .husky/**
 src/**
 tests/**
@@ -14,7 +14,8 @@ yarn.lock
 .gitignore
 **/*.map
 **/*.ts
-media/icon.svg
+.github/media/icon.svg
+.github/media/coverage.svg
 WALLABY_FEATURE_ANALYSIS.md
 CLAUDE.md
 AGENTS.md

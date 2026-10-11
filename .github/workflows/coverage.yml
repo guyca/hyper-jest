@@ -48,7 +48,7 @@ jobs:
 
       - name: Commit updated badge
         run: |
-          git add media/coverage.svg
+          git add .github/media/coverage.svg
           if git diff --cached --quiet; then
             echo "Coverage badge is unchanged."
             exit 0

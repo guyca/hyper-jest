@@ -7,7 +7,7 @@ if (typeof coverage !== 'number' || !Number.isFinite(coverage) || coverage < 0 |
 }
 const label = `${coverage.toFixed(1)}%`;
 const color = coverage >= 90 ? '#4c1' : coverage >= 80 ? '#97ca00' : coverage >= 70 ? '#a4a61d' : coverage >= 60 ? '#dfb317' : '#e05d44';
-await writeFile(new URL('../media/coverage.svg', import.meta.url), `<svg xmlns="http://www.w3.org/2000/svg" width="125" height="20" role="img" aria-label="coverage: ${label}">
+await writeFile(new URL('../.github/media/coverage.svg', import.meta.url), `<svg xmlns="http://www.w3.org/2000/svg" width="125" height="20" role="img" aria-label="coverage: ${label}">
   <title>coverage: ${label}</title>
   <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
   <clipPath id="r"><rect width="125" height="20" rx="3"/></clipPath>
