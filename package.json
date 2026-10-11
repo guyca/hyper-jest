@@ -187,7 +187,7 @@
     "watch": "node esbuild.mjs --watch",
     "test": "jest",
     "test:coverage": "jest --coverage && node scripts/coverage-badge.mjs",
-    "test:it": "HYPERJEST_IT=1 jest tests/integration",
+    "test:integration": "HYPERJEST_IT=1 jest tests/integration",
     "package": "yarn build && vsce package --no-dependencies --skip-license --allow-missing-repository --no-rewrite-relative-links -o hyperjest.vsix",
     "install-extension": "yarn package && code --install-extension hyperjest.vsix --force && echo 'Installed. Reload VS Code: Cmd+Shift+P -> Developer: Reload Window'",
     "check:no-network": "bash scripts/check-no-network.sh"

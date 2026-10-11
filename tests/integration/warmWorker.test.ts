@@ -1,6 +1,6 @@
 /**
  * End-to-end test of the warm worker against tests/fixtures/sample-project with this repo's real
- * jest 29.7. Gated: run with `yarn test:it` after `yarn build:dev`.
+ * jest 29.7. Gated: run with `yarn test:integration` after `yarn build:dev`.
  *
  * Side effects on the fixture (cleaned up here): the `__snapshots__` dir written by `updateSnapshot:
  * 'new'` and a temporary slow test file used to prove mid-file cancellation.

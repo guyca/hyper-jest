@@ -510,5 +510,5 @@ results, a test-story viewer, and profiling. These are separate from the existin
 | Offline runtime | `yarn check:no-network` passes for production bundles |
 | Distribution | Packaged manifest and bundles match source; no machine-specific project references |
 
-Use `yarn build`, `yarn test`, `yarn test:it`, `yarn check:no-network`, and `yarn package`.
+Use `yarn build`, `yarn test`, `yarn test:integration`, `yarn check:no-network`, and `yarn package`.
 Optional external validation uses paths supplied at invocation time, with reports kept outside the repository.
