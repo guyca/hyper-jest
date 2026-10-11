@@ -1,0 +1,45 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Jerusalem
+    open-pull-requests-limit: 2
+    versioning-strategy: increase
+    exclude-paths:
+      - "tests/fixtures/**"
+    ignore:
+      # New VS Code API versions require a coordinated engines.vscode bump.
+      - dependency-name: "@types/vscode"
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
+    groups:
+      dependencies-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+      dependencies-major:
+        patterns: ["*"]
+        update-types: [major]
+      dependencies-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Jerusalem
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns: ["*"]
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
