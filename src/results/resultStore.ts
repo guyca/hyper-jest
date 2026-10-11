@@ -108,8 +108,9 @@ export class ResultStore {
   }
   entriesFor(p: string): Map<number, InlineEntry[]> {
     const out = new Map<number, InlineEntry[]>();
-    for (const [id, store] of this.partitions) for (const [line, entries] of store.entriesFor(p)) {
-      const labelled = this.partitions.size > 1 ? entries.map(e => ({ ...e, text: `[${this.projectLabel(id)}] ${e.text}`, longText: `[${this.projectLabel(id)}] ${e.longText ?? e.text}` })) : entries;
+    const contributors = [...this.partitions].map(([id, store]) => ({ id, lines: store.entriesFor(p) })).filter(({ lines }) => lines.size > 0);
+    for (const { id, lines } of contributors) for (const [line, entries] of lines) {
+      const labelled = contributors.length > 1 ? entries.map(e => ({ ...e, text: `[${this.projectLabel(id)}] ${e.text}`, longText: `[${this.projectLabel(id)}] ${e.longText ?? e.text}` })) : entries;
       out.set(line, [...(out.get(line) ?? []), ...labelled]);
     }
     return out;
