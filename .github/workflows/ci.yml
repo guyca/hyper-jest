@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: PR checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check lockfile registry URLs
+        run: |
+          if grep -q '__archiveUrl=' yarn.lock; then
+            echo "::error file=yarn.lock::yarn.lock pins registry tarball URLs. Run 'sh scripts/sanitize-lockfile.sh' and commit yarn.lock."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Enable pinned Yarn
+        run: |
+          corepack enable
+          corepack install
+
+      - name: Install dependencies
+        env:
+          HUSKY: '0'
+        run: yarn install --immutable
+
+      - name: Type-check and build
+        run: yarn build
+
+      - name: Unit tests with coverage
+        run: yarn test --ci --runInBand --coverage
+
+      - name: Integration tests
+        run: yarn test:integration --ci --runInBand
+
+      - name: Check built extension for network APIs
+        run: yarn check:no-network
