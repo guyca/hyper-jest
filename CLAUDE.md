@@ -1,16 +1,12 @@
-# HyperJest — maintainer guide (works fully offline)
+# HyperJest — maintainer guide
 
 HyperJest is a VS Code extension that runs a project's **own** Jest in a pool of warm worker
-processes and paints Wallaby-style results in the editor: gutter coverage squares, inline failure
-messages, inline `console.log` / `//?` live values, Problems entries, a status bar item and a native
-Test Explorer. It never opens a network connection. See `WALLABY_FEATURE_ANALYSIS.md` for the
-feature research and parity mapping.
+processes and paints results in the editor: gutter coverage squares, inline failure messages,
+inline `console.log` / `//?` live values, Problems entries, a status bar item and a native
+Test Explorer.
 
 ## Hard rules
 
-- **Zero network at runtime.** No telemetry, update checks, license checks, `fetch`, `http(s)`, `net`,
-  `dns`, `tls`, `WebSocket`. `yarn check:no-network` greps `dist/` for these and can `lsof` a running
-  extension host.
 - **Never load Jest in the extension host.** Jest, Babel, ts-jest and project configs are loaded only inside
   worker processes (`src/worker/*`) or spawned CLI processes. Loading a config in the host would run
   side effects and block the UI.
@@ -32,7 +28,7 @@ feature research and parity mapping.
   `defaultSemverRangePrefix: ""`, `enableScripts: false`,
   `enableTelemetry: false`. esbuild's binary comes from the optional `@esbuild/darwin-arm64` package;
   keytar's network postinstall never runs.
-- Fresh dependency installs use the public npm registry. Using the installed `.vsix` requires no network.
+- Fresh dependency installs use the public npm registry.
 
 ## Commands
 
@@ -46,15 +42,9 @@ yarn build:dev              # fast dev bundles with source maps
 yarn watch                  # rebuild on change (used by .vscode/launch.json "Run HyperJest (dev host)")
 yarn test                   # HyperJest's own unit tests (jest 29.7 + ts-jest, ~420 tests, no vscode)
 yarn test:it                # gated integration tests: real jest 29.7 driven through the worker/reporter
-yarn package                # build + vsce package -> hyperjest.vsix (no network needed by vsce flags)
+yarn package                # build + vsce package -> hyperjest.vsix
 yarn install-extension      # package + code --install-extension hyperjest.vsix --force
-yarn check:no-network       # static scan of dist/ (+ lsof of a running extension host when given a pid)
 ```
-
-Rebuilding offline later: `YARN_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache` works
-once Corepack has the pinned Yarn release and Yarn's cache has the required packages. Run
-`yarn install --immutable` online first to populate the cache for your platform. Builds and tests use
-local dependencies; Yarn does not run dependency postinstall scripts.
 
 Install into VS Code: `code --install-extension hyperjest.vsix --force`, then **Developer: Reload Window**.
 
@@ -106,7 +96,14 @@ If editing dependency entries by hand, run `yarn install` to update the lockfile
 with `yarn install --immutable`. For `@types/vscode`, bump `engines.vscode` to the same major.minor.
 Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist/worker/*.cjs` (expect 0).
 
-## Troubleshooting (all offline)
+## Coverage badge
+
+Run `yarn test:coverage` to measure line coverage across `src/` and refresh `media/coverage.svg` locally.
+The detailed report is in `coverage/index.html`. On a push to `master` (or a manual workflow run),
+GitHub Actions runs the tests and commits the badge only if it changed. Branch rules must allow the
+Actions bot to push the badge update to `master`.
+
+## Troubleshooting
 
 - **Output channel**: View → Output → "HyperJest". Set `hyperjest.trace: true` for worker-level detail; the
   channel's log level can be raised with "Developer: Set Log Level…".
@@ -163,13 +160,12 @@ directory; repeat `--repo` to inspect multiple directories. The parser corpus te
 
 1. `yarn build && yarn test && yarn test:it` green.
 2. `yarn package`; `code --install-extension hyperjest.vsix --force`; reload.
-3. With Wi-Fi off: open a test in a project with installed dependencies → green squares in the
+3. Open a test in a project with installed dependencies → green squares in the
    test and source files; break an `expect` → red line + Problems entry; `console.log` inline;
    Debug Line Test hits a breakpoint; Update Test Snapshots writes `__snapshots__`.
 4. Repeat with Jest 29 and 30, `@jest-environment` docblocks, a React Native project and a project with a
    script-selected config. A project without installed Jest shows `unavailable` with an install hint;
    non-Jest test scripts are ignored.
-5. `yarn check:no-network <extension host pid>` → no sockets from HyperJest or its workers.
 
 ## Release steps
 

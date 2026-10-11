@@ -1,7 +1,7 @@
 {
   "name": "hyperjest",
   "displayName": "HyperJest",
-  "description": "Offline, license-free, multi-core Jest test runner with Wallaby-style real-time gutter coverage, inline errors and live values.",
+  "description": "Multi-core Jest test runner for VS Code with real-time gutter coverage, inline errors and live values.",
   "version": "0.1.0",
   "publisher": "guyc",
   "private": true,
