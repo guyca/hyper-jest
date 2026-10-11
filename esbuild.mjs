@@ -34,6 +34,14 @@ const hostBuild = {
   external: ['vscode'],
 };
 
+/** Project discovery uses a separate thread in the extension host's own Node runtime. */
+const discoveryBuild = {
+  ...common,
+  entryPoints: ['src/discovery/discoveryWorker.ts'],
+  outfile: 'dist/discoveryWorker.js',
+  target: 'node22',
+};
+
 /**
  * Worker-side bundles. They run in the PROJECT's node (not the extension host) and must never
  * bundle Jest/Babel: every Jest package is `require`d through a chain-resolved absolute path at
@@ -52,8 +60,8 @@ const workerBuild = {
 };
 
 if (watch) {
-  const ctxs = await Promise.all([esbuild.context(hostBuild), esbuild.context(workerBuild)]);
+  const ctxs = await Promise.all([esbuild.context(hostBuild), esbuild.context(discoveryBuild), esbuild.context(workerBuild)]);
   await Promise.all(ctxs.map(c => c.watch()));
 } else {
-  await Promise.all([esbuild.build(hostBuild), esbuild.build(workerBuild)]);
+  await Promise.all([esbuild.build(hostBuild), esbuild.build(discoveryBuild), esbuild.build(workerBuild)]);
 }
