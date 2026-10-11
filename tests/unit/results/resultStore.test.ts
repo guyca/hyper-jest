@@ -180,6 +180,40 @@ describe('ResultStore', () => {
     expect(store.entriesFor(SRC).get(4)!.map(e => e.text)).toEqual(['greeting alice']);
   });
 
+  it('labels inline output only when multiple projects contribute to the same file', () => {
+    const { store } = makeStore();
+    const otherProject = 'other-config';
+    const otherFile = '/repo/pkg/src/lib/other.js';
+    store.setProjectLabel(PROJECT, 'pkg · jest.config.js');
+    store.setProjectLabel(otherProject, 'pkg · jest.other.config.js');
+
+    store.apply(fileStart('r1'), PROJECT);
+    store.apply(consoleMsg('r1', 'first', { file: SRC, line: 5 }), PROJECT);
+    store.apply(valueMsg('r1', 'value', { file: SRC, line: 6 }), PROJECT);
+    store.apply(fileResult('r1', 'passed'), PROJECT);
+    store.apply(fileStart('r2'), otherProject);
+    store.apply(consoleMsg('r2', 'elsewhere', { file: otherFile, line: 5 }), otherProject);
+    store.apply(fileResult('r2', 'passed'), otherProject);
+
+    expect(store.entriesFor(SRC).get(4)![0].text).toBe('first');
+    expect(store.entriesFor(SRC).get(4)![0].longText).toBeUndefined();
+    expect(store.entriesFor(SRC).get(5)![0].text).toBe('value');
+
+    store.apply(fileStart('r3'), otherProject);
+    store.apply(consoleMsg('r3', 'second', { file: SRC, line: 5 }), otherProject);
+    store.apply(fileResult('r3', 'passed'), otherProject);
+    expect(store.entriesFor(SRC).get(4)!.map(e => e.text)).toEqual([
+      '[pkg · jest.config.js] first',
+      '[pkg · jest.other.config.js] second',
+    ]);
+
+    store.clearInlineEntries(SRC, 4);
+    store.apply(fileStart('r4'), PROJECT);
+    store.apply(valueMsg('r4', 'value', { file: SRC, line: 6 }), PROJECT);
+    store.apply(fileResult('r4', 'passed'), PROJECT);
+    expect(store.entriesFor(SRC).get(5)![0].text).toBe('value');
+  });
+
   it('clearInlineEntries removes a line or a whole file', () => {
     const { store } = makeStore();
     store.apply(fileStart('r1'), PROJECT);
