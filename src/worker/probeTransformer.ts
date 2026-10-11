@@ -8,12 +8,13 @@
  *   babelCore.transformSync(innerCode, {filename, babelrc:false, configFile:false,
  *     sourceMaps:'both', inputSourceMap: innerMap, retainLines:true, plugins:[probePlugin]})
  *
- * The plugin collects the nodes ending right before each marker (same line, only whitespace, `;`
- * or `,` in between), tries them outermost-first and replaces the first wrappable expression with
+ * The plugin collects the nodes ending right before each marker (same or next line, only whitespace,
+ * `;` or `,` in between), tries them outermost-first and replaces the first wrappable expression with
  *   `globalThis.__hj_v("<abs file>", <line 1-based>, <col 0-based>, (expr))`
  * (line/col = the marker comment's position in the ORIGINAL source). `const x = expr; //?` wraps
  * the init, `return expr; //?` the argument, `expr; //?` / `a.b //?` / `await p //?` the whole
  * expression, `key: value, //?` the value; `function f(){} //?` logs `f` after the declaration.
+ * `//? currentPage.url` after a statement evaluates that independent expression after the statement.
  * Nothing wrappable (e.g. `if (x) { //?`) skips the marker. A prelude installs a no-op `__hj_v` when the environment wrapper
  * did not (CLI / Debug runs), so instrumented code never throws.
  *
@@ -35,7 +36,7 @@ import { createHash } from 'crypto';
 import * as path from 'path';
 
 export const PROBE_GLOBAL = '__hj_v';
-export const DEFAULT_PROBE_VERSION = '1';
+export const DEFAULT_PROBE_VERSION = '2';
 
 /** `//?` not preceded by `:`, `/` or a word char (URLs, `///?`), followed by a modifier/space/EOL; or `/*? ... *\/`. */
 const LIVE_MARKER_RE = /(?<![:\w/])\/\/\?(?=[\s.?+$]|$)|\/\*\?[.?+]?(?:\s[\s\S]*?)?\*\//m;
@@ -54,8 +55,10 @@ export interface LiveMarker {
   end: number;
   kind: MarkerKind;
   commentKind: 'line' | 'block';
-  /** Code after the marker, evaluated with `$` bound to the value (e.g. `$.length`). */
+  /** Code after the marker; `$` references the preceding value, otherwise it runs after the statement. */
   expression?: string;
+  /** An independent expression evaluated after the preceding statement (no `$` reference). */
+  standalone?: boolean;
   /** Start/end of the expression the marker targets, in original coordinates (for source-map pairing). */
   targetStart?: { line: number; column: number };
   targetEnd?: { line: number; column: number };
@@ -159,12 +162,48 @@ function walk(node: any, visit: (node: RawNode, parent: RawNode | undefined, key
 const GAP_RE = /^[\s;,]*$/;
 const NON_CANDIDATE_TYPES = new Set(['File', 'Program', 'TemplateElement', 'Directive', 'DirectiveLiteral', 'InterpreterDirective', 'JSXText']);
 
-/** Among raw nodes, the one ending closest before `commentStart` on the comment's line (innermost on ties). */
+function immediatelyFollows(endLine: number, startLine: number): boolean {
+  return startLine === endLine || startLine === endLine + 1;
+}
+
+function isProbeStatement(type: string): boolean {
+  return type !== 'BlockStatement' && type !== 'EmptyStatement' && (type.endsWith('Statement') || type.endsWith('Declaration'));
+}
+
+/** The nearest complete statement before a trailing or immediately following comment. */
+function findRawStatement(ast: any, source: string, comment: CommentLike): RawNode | undefined {
+  let best: RawNode | undefined;
+  walk(ast, node => {
+    if (!node.loc || !isProbeStatement(node.type) || node.end > comment.start) return;
+    if (!immediatelyFollows(node.loc.end.line, comment.loc.start.line)) return;
+    if (!GAP_RE.test(source.slice(node.end, comment.start))) return;
+    if (!best || node.end > best.end || (node.end === best.end && node.start < best.start)) best = node;
+  });
+  return best;
+}
+
+function referencesProbeValue(expression: string, babelParser: any): boolean {
+  try {
+    const ast = babelParser.parseExpression(expression, { plugins: ['jsx', 'typescript'] });
+    let found = false;
+    walk(ast, (node, parent, key) => {
+      if (node.type !== 'Identifier' || node.name !== '$') return;
+      if (parent && key === 'property' && (parent.type === 'MemberExpression' || parent.type === 'OptionalMemberExpression') && !parent.computed) return;
+      if (parent && key === 'key' && (parent.type === 'ObjectProperty' || parent.type === 'ClassProperty') && !parent.computed) return;
+      found = true;
+    });
+    return found;
+  } catch {
+    return expression.includes('$');
+  }
+}
+
+/** Among raw nodes, the one ending closest before `commentStart` (innermost on ties). */
 function findRawTarget(ast: any, source: string, comment: CommentLike): RawNode | undefined {
   let best: RawNode | undefined;
   walk(ast, node => {
     if (NON_CANDIDATE_TYPES.has(node.type) || !node.loc) return;
-    if (node.loc.end.line !== comment.loc.start.line || node.end > comment.start) return;
+    if (!immediatelyFollows(node.loc.end.line, comment.loc.start.line) || node.end > comment.start) return;
     if (!GAP_RE.test(source.slice(node.end, comment.start))) return;
     if (!best || node.end > best.end || (node.end === best.end && node.start >= best.start)) best = node;
   });
@@ -210,7 +249,9 @@ export function findLiveMarkers(source: string, filename: string, babelParser: a
       commentKind: c.type === 'CommentBlock' ? 'block' : 'line',
     };
     if (parsed.expression) marker.expression = parsed.expression;
-    const target = resolveRawExpression(findRawTarget(ast, source, c));
+    const statement = parsed.expression && !referencesProbeValue(parsed.expression, babelParser) ? findRawStatement(ast, source, c) : undefined;
+    if (statement) marker.standalone = true;
+    const target = statement ?? resolveRawExpression(findRawTarget(ast, source, c));
     if (target?.loc) {
       marker.targetStart = { line: target.loc.start.line, column: target.loc.start.column };
       marker.targetEnd = { line: target.loc.end.line, column: target.loc.end.column };
@@ -235,7 +276,7 @@ export function markersHash(markers: readonly LiveMarker[]): string {
 
 interface Anchor {
   marker: LiveMarker;
-  mode: 'endsBefore' | 'startsAt';
+  mode: 'endsBefore' | 'afterStatement' | 'startsAt';
   line: number;
   column: number;
   /** For endsBefore: the transformed comment's start offset. */
@@ -412,7 +453,7 @@ function computeAnchors(ctx: PluginContext, fileComments: CommentLike[], code: s
   const transformedMarkers = fileComments.filter(c => parseMarkerValue(c.value));
   if (transformedMarkers.length === ctx.markers.length && transformedMarkers.length > 0) {
     ctx.stats.mode = 'comments';
-    return transformedMarkers.map((c, i) => ({ marker: ctx.markers[i], mode: 'endsBefore', line: c.loc.start.line, column: c.loc.start.column, offset: c.start }));
+    return transformedMarkers.map((c, i) => ({ marker: ctx.markers[i], mode: ctx.markers[i].standalone ? 'afterStatement' : 'endsBefore', line: c.loc.start.line, column: c.loc.start.column, offset: c.start }));
   }
   const tm = ctx.deps.traceMapping;
   if (ctx.innerMap && tm?.TraceMap && typeof tm.generatedPositionFor === 'function') {
@@ -469,14 +510,15 @@ export function createProbePlugin(ctx: PluginContext): (babel: any) => any {
                 const cand: Candidate = { path: p, start: node.start, end: node.end, endLine: loc.end.line, endColumn: loc.end.column };
                 anchors.forEach((a, i) => {
                   const list = candidates[i];
-                  if (a.mode === 'endsBefore') {
+                  if (a.mode === 'endsBefore' || a.mode === 'afterStatement') {
                     // Nodes ending closest before the comment on its line; pre-order traversal keeps the
                     // outermost first among nodes sharing that end (`a.b //?` -> MemberExpression before `b`).
-                    if (loc.end.line !== a.line || typeof node.end !== 'number' || node.end > a.offset) return;
+                    if (!immediatelyFollows(loc.end.line, a.line) || typeof node.end !== 'number' || node.end > a.offset) return;
+                    if (a.mode === 'afterStatement' && !isProbeStatement(node.type)) return;
                     if (!GAP_RE.test(code.slice(node.end, a.offset))) return;
                     if (!list.length || node.end > list[0].end) list.splice(0, list.length, cand);
                     else if (node.end === list[0].end) list.push(cand);
-                  } else if (loc.start.line === a.line && loc.start.column === a.column && (p.isExpression() || p.isVariableDeclarator() || p.isFunctionDeclaration() || p.isClassDeclaration())) {
+                  } else if (loc.start.line === a.line && loc.start.column === a.column && (a.marker.standalone ? isProbeStatement(node.type) : (p.isExpression() || p.isVariableDeclarator() || p.isFunctionDeclaration() || p.isClassDeclaration()))) {
                     list.push(cand); // enter order: outermost first
                   }
                 });
@@ -484,13 +526,19 @@ export function createProbePlugin(ctx: PluginContext): (babel: any) => any {
             });
           }
 
-          const jobs: Array<{ resolved: Resolved; marker: LiveMarker; start: number }> = [];
+          const jobs: Array<{ resolved?: Resolved; statement?: any; marker: LiveMarker; start: number }> = [];
           candidates.forEach((cands, i) => {
             const anchor = anchors[i];
             // startsAt: candidates ending within the mapped end bound first (outermost first), the rest as fallback.
             const ordered = anchor.mode === 'startsAt'
               ? [...cands.filter(c => endsWithinBound(c, anchor.endBound)), ...cands.filter(c => !endsWithinBound(c, anchor.endBound))]
               : cands;
+            if (anchor.marker.standalone) {
+              const statement = ordered.find(c => isProbeStatement(c.path.node.type));
+              if (!statement) { ctx.stats.skipped++; return; }
+              jobs.push({ statement: statement.path, marker: anchor.marker, start: statement.start });
+              return;
+            }
             let resolved: Resolved | undefined;
             for (const c of ordered) {
               resolved = resolveWrappable(c.path);
@@ -500,15 +548,25 @@ export function createProbePlugin(ctx: PluginContext): (babel: any) => any {
             jobs.push({ resolved, marker: anchor.marker, start: resolved.path.node.start ?? ordered[0].start });
           });
           // innermost/later targets first so nested markers keep valid paths
-          jobs.sort((x, y) => y.start - x.start);
+          jobs.sort((x, y) => y.start - x.start || y.marker.start - x.marker.start);
           const done = new WeakSet<object>();
           for (const job of jobs) {
-            const { resolved, marker } = job;
-            if (done.has(resolved.path.node)) { ctx.stats.skipped++; continue; }
-            done.add(resolved.path.node);
-            if (resolved.kind === 'expr') {
+            const { resolved, marker, statement } = job;
+            const target = statement ?? resolved?.path;
+            if (!target || (!statement && done.has(target.node))) { ctx.stats.skipped++; continue; }
+            if (!statement) done.add(target.node);
+            if (statement) {
+              try {
+                const expression = ctx.deps.babelParser.parseExpression(marker.expression, { plugins: ['jsx', 'typescript'] });
+                statement.insertAfter(t.expressionStatement(buildProbeCall(t, ctx.filename, marker, expression)));
+              } catch (err) {
+                ctx.deps.log?.(`probe: cannot parse live-comment expression "${marker.expression}" at ${ctx.filename}:${marker.line}: ${(err as Error).message}`);
+                ctx.stats.skipped++;
+                continue;
+              }
+            } else if (resolved?.kind === 'expr') {
               resolved.path.replaceWith(buildReplacement(t, ctx.deps.babelParser, ctx.filename, marker, resolved.path.node, ctx.deps.log));
-            } else {
+            } else if (resolved?.kind === 'decl') {
               resolved.path.insertAfter(t.expressionStatement(buildProbeCall(t, ctx.filename, marker, t.identifier(resolved.name))));
             }
             ctx.stats.wrapped++;

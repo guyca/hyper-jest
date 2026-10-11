@@ -100,6 +100,31 @@ describe('marker detection', () => {
 });
 
 describe('instrumentWithProbes (comment pairing)', () => {
+  it.each([
+    ['trailing', 'const { currentPage } = context; //? currentPage.url', 2, 33],
+    ['following', 'const { currentPage } = context;\n//? currentPage.url', 3, 0],
+  ])('evaluates an independent expression after a destructuring statement (%s)', (_placement, declaration, line, column) => {
+    const src = [
+      'const context = { currentPage: { url: "https://example.test" } };',
+      declaration,
+      'module.exports = currentPage.url;',
+    ].join('\n');
+    const out = instrumentWithProbes({ code: src, source: src, filename: FILE, deps: deps() })!;
+    expect(out.wrapped).toBe(1);
+    const { exports } = run(out.code);
+    expect(exports).toBe('https://example.test');
+    expect(hits).toEqual([[FILE, line, column, 'https://example.test']]);
+  });
+
+  it('still binds $ to the preceding value on the following line', () => {
+    const src = 'const values = [1, 2, 3];\n//? $.length\nmodule.exports = values;';
+    const out = instrumentWithProbes({ code: src, source: src, filename: FILE, deps: deps() })!;
+    expect(out.wrapped).toBe(1);
+    const { exports } = run(out.code);
+    expect(exports).toEqual([1, 2, 3]);
+    expect(hits).toEqual([[FILE, 2, 0, 3]]);
+  });
+
   it('wraps the right expressions with original coordinates and keeps the code runnable', () => {
     const out = instrumentWithProbes({ code: SOURCE, source: SOURCE, filename: FILE, deps: deps() })!;
     expect(out.mode).toBe('comments');
@@ -200,6 +225,19 @@ describe('instrumentWithProbes (comment pairing)', () => {
     expect(traceMapping.originalPositionFor(tracer, { line, column: 0 }).line).toBe(7);
   });
 
+  it('uses the source map for an independent expression when comments are dropped', () => {
+    for (const [comment, line, column] of [[' //? currentPage.url', 2, 33], ['\n//? currentPage.url', 3, 0]] as const) {
+      hits.length = 0;
+      const src = `const context = { currentPage: { url: "mapped" } };\nconst { currentPage } = context;${comment}\nmodule.exports = currentPage.url;`;
+      const inner = babelCore.transformSync(src, { filename: FILE, babelrc: false, configFile: false, comments: false, sourceMaps: true });
+      const out = instrumentWithProbes({ code: inner.code, map: inner.map, source: src, filename: FILE, deps: deps() })!;
+      expect(out.mode).toBe('sourceMap');
+      expect(out.wrapped).toBe(1);
+      run(out.code);
+      expect(hits).toEqual([[FILE, line, column, 'mapped']]);
+    }
+  });
+
   it('skips everything without a map or trace-mapping when comments are gone', () => {
     const inner = babelCore.transformSync(SOURCE, { filename: FILE, babelrc: false, configFile: false, comments: false });
     const log: string[] = [];
@@ -239,7 +277,7 @@ describe('wrapTransformer', () => {
     expect(out.map).toBeDefined();
     const k1 = w.getCacheKey(SOURCE, FILE, {});
     const k2 = w.getCacheKey(SOURCE.replace('//? $.length', '//?'), FILE, {});
-    const k3 = wrapTransformer(identity().inner, { ...deps(), probeVersion: '2' }).getCacheKey(SOURCE, FILE, {});
+    const k3 = wrapTransformer(identity().inner, { ...deps(), probeVersion: '3' }).getCacheKey(SOURCE, FILE, {});
     expect(k1).toMatch(/^[0-9a-f]{40}$/);
     expect(k1).not.toBe('inner:sample.js');
     expect(new Set([k1, k2, k3]).size).toBe(3);
