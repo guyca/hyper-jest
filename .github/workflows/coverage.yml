@@ -56,22 +56,24 @@ jobs:
             exit 0
           fi
 
-          cp .github/media/coverage.svg "$RUNNER_TEMP/coverage.svg"
-          git restore .github/media/coverage.svg
+          # Dependency setup can modify tracked files in the test checkout.
+          # Publish from a separate worktree so those changes stay isolated.
+          badge_dir="$RUNNER_TEMP/coverage-badge"
           if git ls-remote --exit-code --heads origin coverage-badge; then
             git fetch origin coverage-badge
-            git switch --force-create coverage-badge FETCH_HEAD
+            git worktree add --detach "$badge_dir" FETCH_HEAD
           else
-            git switch --orphan coverage-badge
+            git worktree add --detach "$badge_dir" HEAD
+            git -C "$badge_dir" switch --orphan coverage-badge
           fi
-          cp "$RUNNER_TEMP/coverage.svg" coverage.svg
-          git add coverage.svg
-          if git diff --cached --quiet; then
+          cp .github/media/coverage.svg "$badge_dir/coverage.svg"
+          git -C "$badge_dir" add coverage.svg
+          if git -C "$badge_dir" diff --cached --quiet; then
             echo "Coverage badge is unchanged."
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "docs: refresh coverage badge"
-          git push origin HEAD:coverage-badge
+          git -C "$badge_dir" config user.name "github-actions[bot]"
+          git -C "$badge_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$badge_dir" commit -m "docs: refresh coverage badge"
+          git -C "$badge_dir" push origin HEAD:coverage-badge
