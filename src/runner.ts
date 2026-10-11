@@ -241,8 +241,12 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
 
   /** Runs the test under the cursor (whole file when the name is dynamic). */
   async runLine(filePath: string, line0: number, mode: 'run' | 'debug'): Promise<RunHandle | undefined> {
-    const parsed = this.docs.ensureForLookup(filePath);
-    const hit = parsed ? findTestAtLine(parsed, line0) : null;
+    const lookup = this.docs.lookupAtLine(filePath, line0);
+    if (!lookup) {
+      void vscode.window.showInformationMessage('HyperJest: cannot identify a test on this line while the file has a syntax error.');
+      return undefined;
+    }
+    const hit = findTestAtLine(lookup.parsed, lookup.line);
     const selection: RunTestSelection = { path: filePath };
     if (hit) {
       const { names, exact } = testFullNames(hit.ancestry, hit.node);

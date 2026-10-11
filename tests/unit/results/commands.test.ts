@@ -63,7 +63,7 @@ function setup(opts: { projects?: ProjectOverride[]; entries?: any[] } = {}) {
     runFiles: async (sels: unknown) => { runnerCalls.push(['runFiles', sels]); return handles.next; },
     updateSnapshots: async (scope: unknown) => { runnerCalls.push(['updateSnapshots', scope]); },
     runTests: async (keys: unknown) => { runnerCalls.push(['runTests', keys]); },
-    docs: { ensure: () => parsedMathSpec(), ensureForLookup: () => parsedMathSpec() },
+    docs: { ensure: () => parsedMathSpec(), lookupAtLine: (_path: string, line: number) => ({ parsed: parsedMathSpec(), line }) },
     getState: () => ({ started: true, running: false, paused: false, runMode: 'onType' }),
     relearnOpenDocuments: jest.fn(),
   };
@@ -137,6 +137,19 @@ describe('Test Explorer command arguments', () => {
     await run('hyperjest.updateTestSnapshots', item);
     expect(t.explorer.selectionsFor).toHaveBeenCalledWith([item]);
     expect(t.runnerCalls).toEqual([['updateSnapshots', { kind: 'selection', selections: [{ path: SPEC, names: [T.addTwo] }] }]]);
+  });
+
+  it('Update Test Snapshots uses the mapped line and skips an unmappable line', async () => {
+    const t = setup();
+    t.runner.docs.lookupAtLine = jest.fn(() => ({ parsed: parsedMathSpec(), line: 3 }));
+    await run('hyperjest.updateTestSnapshots', { path: SPEC, line: 9 });
+    expect(t.runnerCalls).toEqual([['updateSnapshots', { kind: 'selection', selections: [{ path: SPEC, names: [T.addTwo] }] }]]);
+
+    t.runnerCalls.length = 0;
+    t.runner.docs.lookupAtLine = jest.fn(() => undefined);
+    await run('hyperjest.updateTestSnapshots', { path: SPEC, line: 9 });
+    expect(t.runnerCalls).toEqual([]);
+    expect(v.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('cannot identify a test'));
   });
 
   it('Show Diff on a test message opens the diff of that message\'s test', async () => {
