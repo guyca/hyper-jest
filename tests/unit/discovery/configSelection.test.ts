@@ -11,6 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { ProjectRegistry } from '../../../src/discovery/projectRegistry';
+import { discoverProjectsAsync } from '../../../src/core/projectSpec';
 import { DEFAULT_SETTINGS, type HyperJestSettings } from '../../../src/core/settingsModel';
 import { noopLogger } from '../../../src/core/logger';
 
@@ -28,7 +29,8 @@ beforeEach(() => {
     const files = typeof pattern === 'string' ? ['package.json'] : ['tests/unit/pass.test.js', 'tests/integration/external.test.js'];
     return files.map(f => vscode.Uri.file(path.join(dir, f)));
   });
-  registry = new ProjectRegistry(pool as any, () => settings, noopLogger, { get: () => undefined, update: async () => undefined } as any);
+  registry = new ProjectRegistry(pool as any, () => settings, noopLogger, { get: () => undefined, update: async () => undefined } as any,
+    { beginRefresh() {}, discover: discoverProjectsAsync, dispose() {} });
 });
 afterEach(() => { registry.dispose(); fs.rmSync(dir, { recursive: true, force: true }); });
 

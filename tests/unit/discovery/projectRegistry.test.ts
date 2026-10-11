@@ -19,9 +19,9 @@ jest.mock('vscode', () => {
     },
   };
 });
-jest.mock('../../../src/core/projectSpec', () => ({ discoverProjectsAsync: jest.fn() }));
+jest.mock('../../../src/discovery/hyperConfigLoader', () => ({ prepareHyperConfig: jest.fn() }));
 
-import { discoverProjectsAsync } from '../../../src/core/projectSpec';
+import { prepareHyperConfig } from '../../../src/discovery/hyperConfigLoader';
 import { ProjectRegistry, type RegistryEvent } from '../../../src/discovery/projectRegistry';
 import { WorkerInitError, WorkerKilledError } from '../../../src/workerPool';
 import { DEFAULT_SETTINGS, type HyperJestSettings } from '../../../src/core/settingsModel';
@@ -58,16 +58,16 @@ function storeMemento() {
 }
 
 async function makeRegistry(specs: ProjectSpec[], settings: Partial<HyperJestSettings> = {}, opts: { autoBoot?: boolean; memento?: ReturnType<typeof storeMemento> } = {}) {
-  (discoverProjectsAsync as jest.Mock).mockResolvedValue({ specs, skipped: [] });
+  const discovery = { beginRefresh: jest.fn(), discover: jest.fn().mockResolvedValue({ specs, skipped: [] }), dispose: jest.fn() };
   const { pool, pending } = makeFakePool();
   const memento = opts.memento ?? { get: (_k: string, d: unknown) => d, update: jest.fn(async () => undefined) };
-  const registry = new ProjectRegistry(pool as any, () => ({ ...DEFAULT_SETTINGS, ...settings }), noopLogger, memento as any);
+  const registry = new ProjectRegistry(pool as any, () => ({ ...DEFAULT_SETTINGS, ...settings }), noopLogger, memento as any, discovery);
   // RunCoordinator.start() enables implicit boots; most tests model a started HyperJest.
   if (opts.autoBoot ?? true) registry.setAutoBoot(true);
   const events: RegistryEvent[] = [];
   registry.onDidChange(e => events.push(e));
   await registry.refresh();
-  return { registry, pool, pending, events, memento };
+  return { registry, pool, pending, events, memento, discovery };
 }
 
 const readyMsg = (rootDir: string, testMatch: string[]) => ({
@@ -77,6 +77,67 @@ const readyMsg = (rootDir: string, testMatch: string[]) => ({
 });
 
 const flush = () => new Promise(r => setImmediate(r));
+
+describe('ProjectRegistry discovery executor', () => {
+  it('loads HyperJest configs between the preliminary and final discovery passes', async () => {
+    const configFile = `${ENG}/hyperjest.config.js`;
+    const preliminary = spec('native', { configFile });
+    const final = spec('native', { configFile, env: { FROM_CONFIG: 'yes' } });
+    (prepareHyperConfig as jest.Mock).mockResolvedValueOnce({ config: { env: { FROM_CONFIG: 'yes' } } });
+    const discovery = {
+      beginRefresh: jest.fn(),
+      discover: jest.fn(async input => ({ specs: input.hyperConfigs ? [final] : [preliminary], skipped: [] })),
+      dispose: jest.fn(),
+    };
+    const { pool } = makeFakePool();
+    const registry = new ProjectRegistry(pool as any, () => DEFAULT_SETTINGS, noopLogger,
+      { get: (_k: string, d: unknown) => d, update: async () => undefined } as any, discovery);
+    try {
+      expect((await registry.refresh()).specs).toEqual([final]);
+      expect(discovery.beginRefresh).toHaveBeenCalledTimes(1);
+      expect(discovery.discover).toHaveBeenCalledTimes(2);
+      expect(discovery.discover.mock.calls[0][0].hyperConfigs).toBeUndefined();
+      expect(prepareHyperConfig).toHaveBeenCalledWith(
+        { file: configFile, wallaby: `${ENG}/wallaby.js` }, preliminary,
+      );
+      expect(discovery.discover.mock.calls[1][0].hyperConfigs).toEqual({
+        [configFile]: { config: { env: { FROM_CONFIG: 'yes' } } },
+      });
+      expect(registry.get(final.id)?.spec).toEqual(final);
+    } finally { registry.dispose(); }
+    expect(discovery.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces overlapping refreshes while running one discovery pass at a time', async () => {
+    const resultA = { specs: [spec('a')], skipped: [] };
+    const resultB = { specs: [spec('b')], skipped: [] };
+    let resolveA!: (result: typeof resultA) => void;
+    let resolveB!: (result: typeof resultB) => void;
+    const discovery = {
+      beginRefresh: jest.fn(),
+      discover: jest.fn()
+        .mockImplementationOnce(() => new Promise(resolve => { resolveA = resolve; }))
+        .mockImplementationOnce(() => new Promise(resolve => { resolveB = resolve; })),
+      dispose: jest.fn(),
+    };
+    const { pool } = makeFakePool();
+    const registry = new ProjectRegistry(pool as any, () => DEFAULT_SETTINGS, noopLogger,
+      { get: (_k: string, d: unknown) => d, update: async () => undefined } as any, discovery);
+    try {
+      const first = registry.refresh();
+      expect(registry.refresh()).toBe(first);
+      await flush();
+      expect(discovery.discover).toHaveBeenCalledTimes(1);
+      resolveA(resultA);
+      await flush();
+      expect(discovery.discover).toHaveBeenCalledTimes(2);
+      resolveB(resultB);
+      await expect(first).resolves.toEqual(resultB);
+      expect(discovery.beginRefresh).toHaveBeenCalledTimes(2);
+      expect(registry.all().map(entry => entry.spec.id)).toEqual(['b']);
+    } finally { registry.dispose(); }
+  });
+});
 
 describe('ProjectRegistry.projectFor among siblings of one package', () => {
   it('never lets a notJest (e2e) sibling with static matchers claim a unit test file', async () => {

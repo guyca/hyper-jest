@@ -10,7 +10,8 @@ import { prepareHyperConfig } from './hyperConfigLoader';
 import { summarizeConfig } from '../worker/configSummary';
 import type { Logger } from '../core/logger';
 import type { HyperJestSettings } from '../core/settingsModel';
-import { discoverProjectsAsync, type DiscoveryResult, type SkippedPackage } from '../core/projectSpec';
+import type { DiscoveryResult, SkippedPackage } from '../core/projectSpec';
+import type { DiscoveryExecutor } from './discoveryProtocol';
 import { applyCliFilters, createMatcher, JEST_CONFIG_EXT_ORDER, jestDefaultsFor, type TestFileMatcher } from '../core/testFileMatcher';
 import { jestMajor } from '../core/jestResolver';
 import { isUnder, normalizePath } from '../core/paths';
@@ -88,6 +89,7 @@ export class ProjectRegistry implements vscode.Disposable {
     private readonly settings: () => HyperJestSettings,
     private readonly log: Logger,
     memento: vscode.Memento,
+    private readonly discovery: DiscoveryExecutor,
   ) {
     this.configCache = new ConfigCache(memento);
     const watcher = vscode.workspace.createFileSystemWatcher('**/{package.json,jest.config.*,jest.*.config.*,hyperjest.config.js,hyperjest.*.config.js,wallaby.js,wallaby.*.js,babel.config.*,.babelrc,.babelrc.*,tsconfig.json,tsconfig.*.json,.swcrc,yarn.lock,package-lock.json,pnpm-lock.yaml}');
@@ -110,22 +112,23 @@ export class ProjectRegistry implements vscode.Disposable {
   }
 
   private async doRefresh(): Promise<DiscoveryResult> {
+    this.discovery.beginRefresh();
     const s = this.settings();
     const started = Date.now();
     const packageJsonPaths = await scanPackageJsons(s.discovery.exclude, this.log);
-    // Node binaries are validated asynchronously (no spawnSync on the extension-host thread).
+    // The complete discovery passes, including synchronous file I/O, run in a dedicated thread.
     const input = {
       packageJsonPaths,
       settings: s,
       homeDir: os.homedir(),
       platform: process.platform,
-      env: process.env,
+      env: { ...process.env },
       workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath),
       nodeVersionCache: this.nodeVersionCache,
       electronExecPath: process.execPath,
       hostNodeVersion: process.versions.node,
     };
-    const preliminary = await discoverProjectsAsync(input);
+    const preliminary = await this.discovery.discover(input);
     const hyperConfigs: NonNullable<import('../core/projectSpec').DiscoveryInput['hyperConfigs']> = {};
     // Bounded, sequential imports: generated files exist before selection and any Smart Start runs.
     for (const spec of preliminary.specs) if (spec.configFile) {
@@ -133,7 +136,7 @@ export class ProjectRegistry implements vscode.Disposable {
       hyperConfigs[spec.configFile] = await prepareHyperConfig({ file: spec.configFile, wallaby }, spec);
       if (hyperConfigs[spec.configFile].error) this.log.warn(hyperConfigs[spec.configFile].error!);
     }
-    const result = Object.keys(hyperConfigs).length ? await discoverProjectsAsync({ ...input, hyperConfigs }) : preliminary;
+    const result = Object.keys(hyperConfigs).length ? await this.discovery.discover({ ...input, hyperConfigs }) : preliminary;
     const seen = new Set<string>();
     for (const spec of result.specs) {
       seen.add(spec.id);
@@ -505,6 +508,7 @@ export class ProjectRegistry implements vscode.Disposable {
 
   dispose(): void {
     if (this.invalidateTimer) clearTimeout(this.invalidateTimer);
+    this.discovery.dispose();
     this.disposables.forEach(d => d.dispose());
     this.emitter.dispose();
   }

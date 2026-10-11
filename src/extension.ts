@@ -8,6 +8,7 @@ import { OutputLogger } from './log';
 import { Settings } from './settings';
 import { WorkerPool } from './workerPool';
 import { ProjectRegistry } from './discovery/projectRegistry';
+import { WorkerDiscoveryExecutor } from './discovery/discoveryExecutor';
 import { ResultStore } from './results/resultStore';
 import { computeLineView } from './results/lineView';
 import { LineShiftTracker } from './results/lineShift';
@@ -44,7 +45,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   const discoverySettings = () => { const s = settings.get(); return JSON.stringify([s.projects, s.discovery, s.nodePath, s.nodeArgs, s.env]); };
   let previousDiscoverySettings = discoverySettings();
-  const registry = new ProjectRegistry(pool, () => settings.get(), log, context.globalState);
+  const discovery = new WorkerDiscoveryExecutor(path.join(context.extensionPath, 'dist', 'discoveryWorker.js'), log);
+  const registry = new ProjectRegistry(pool, () => settings.get(), log, context.globalState, discovery);
   const store = new ResultStore({ maxEntriesPerLine: Math.max(10, settings.get().console.maxEntriesPerTest) });
   const runner = new RunCoordinator(pool, registry, store, () => settings.get(), workerAssetsDir, log);
 
