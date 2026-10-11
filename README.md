@@ -8,6 +8,16 @@ HyperJest is a VS Code extension that runs your project's own Jest and shows tes
 - **Spot coverage and failures.** Gutter marks show coverage, and failures appear inline.
 - **Inspect live values.** `console.log` output and `//?` values appear beside your code.
 
+## See it in action
+
+See which lines your tests cover and inspect runtime values without leaving the editor. Gutter marks show coverage, `//?` comments reveal expression values, and `console.log` output appears beside the code that produced it. Test Explorer keeps test results in view.
+
+![Coverage marks, live values, and inline console output alongside passing tests in Test Explorer](.github/media/coverage-and-live-values.jpg)
+
+Find failures where they happen. HyperJest highlights failing assertions and the code paths they execute. Use **HyperJest: Show Line Details** to compare expected and actual values, rerun or debug the test, or open the diff.
+
+![Highlighted failure path and assertion details with expected and actual values and actions to run, debug, or show the diff](.github/media/failure-details.jpg)
+
 ## Install from source
 
 You need Node.js 22 or later, Yarn 4.18.0, VS Code 1.134 or later, and the VS Code `code` command on your PATH. From the repository root:
