@@ -1,6 +1,6 @@
 # HyperJest
 
-![Test line coverage](media/coverage.svg)
+![Test line coverage](.github/media/coverage.svg)
 
 HyperJest is a VS Code extension that runs your project's own Jest and shows test feedback as you code.
 
