@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { parseTestFile } from './core/testParser';
+import { diffLines, type LineChange } from './core/textDiff';
 import type { ParsedFile } from './core/testModel';
 
 interface Entry { text: string; parsed: ParsedFile; }
@@ -13,8 +14,8 @@ export class DocumentIndex {
   private readonly entries = new Map<string, Entry>();
   /** Text that the last dispatched run of a test file saw (baseline for change analysis). */
   private readonly runBaseline = new Map<string, Entry>();
-  /** Last parse per path that produced a test tree (kept while the file has an unrecoverable syntax error). */
-  private readonly lastWithNodes = new Map<string, ParsedFile>();
+  /** Last parse and its source text, kept while the file has an unrecoverable syntax error. */
+  private readonly lastWithNodes = new Map<string, Entry>();
   private readonly listeners = new Set<(path: string, parsed: ParsedFile) => void>();
 
   /** Fires after a file was (re)parsed. */
@@ -32,8 +33,9 @@ export class DocumentIndex {
     const existing = this.entries.get(path);
     if (existing && existing.text === text) return existing.parsed;
     const parsed = parseTestFile(text, path);
-    this.entries.set(path, { text, parsed });
-    if (!isUnparsable(parsed)) this.lastWithNodes.set(path, parsed);
+    const entry = { text, parsed };
+    this.entries.set(path, entry);
+    if (!isUnparsable(parsed)) this.lastWithNodes.set(path, entry);
     for (const l of this.listeners) l(path, parsed);
     return parsed;
   }
@@ -52,12 +54,18 @@ export class DocumentIndex {
   }
 
   /**
-   * For test-at-line lookups (Run/Debug Line, snapshot at line): the current parse, or while the file is
-   * temporarily broken beyond recovery (`nodes: []` + `parseError`), the last parse that had a tree.
+   * For test-at-line lookups: use the current parse, or map the cursor back to the last parse
+   * with a tree while the file is broken. A changed line has no trustworthy old counterpart.
    */
-  ensureForLookup(path: string): ParsedFile | undefined {
+  lookupAtLine(path: string, line: number): { parsed: ParsedFile; line: number } | undefined {
     const parsed = this.ensure(path);
-    return parsed && isUnparsable(parsed) ? this.lastWithNodes.get(path) ?? parsed : parsed;
+    if (!parsed) return undefined;
+    if (!isUnparsable(parsed)) return { parsed, line };
+    const last = this.lastWithNodes.get(path);
+    const current = this.entries.get(path);
+    if (!last || !current) return undefined;
+    const oldLine = mapNewLineToOld(diffLines(last.text, current.text), line);
+    return oldLine === undefined ? undefined : { parsed: last.parsed, line: oldLine };
   }
 
   /** Records the current parse as the baseline for the next change analysis. */
@@ -75,6 +83,17 @@ export class DocumentIndex {
     for (const key of this.runBaseline.keys()) if (key.endsWith(`\0${path}`)) this.runBaseline.delete(key);
     this.lastWithNodes.delete(path);
   }
+}
+
+/** Map an unchanged current line to the last parsed text; changed/inserted lines are ambiguous. */
+function mapNewLineToOld(changes: readonly LineChange[], line: number): number | undefined {
+  let offset = 0;
+  for (const change of changes) {
+    if (line < change.start) break;
+    if (line < change.end) return undefined;
+    offset = change.oldEnd - change.end;
+  }
+  return line + offset;
 }
 
 /** An unrecoverable syntax error: the parser produced no tree at all. */

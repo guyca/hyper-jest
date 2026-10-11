@@ -356,9 +356,13 @@ export function registerCommands(d: CommandDeps): vscode.Disposable[] {
       }
       const t = lineOf(arg);
       if (!t) return;
-      const parsed = runner.docs.ensureForLookup(t.path);
+      const lookup = runner.docs.lookupAtLine(t.path, t.line);
+      if (!lookup) {
+        void vscode.window.showInformationMessage('HyperJest: cannot identify a test on this line while the file has a syntax error.');
+        return;
+      }
       const { findTestAtLine, testFullNames } = await import('./core/testIds');
-      const hit = parsed ? findTestAtLine(parsed, t.line) : null;
+      const hit = findTestAtLine(lookup.parsed, lookup.line);
       const names = hit ? testFullNames(hit.ancestry, hit.node) : undefined;
       await runner.updateSnapshots({ kind: 'selection', selections: [{ path: t.path, names: names?.exact ? names.names : undefined }] });
     }),
