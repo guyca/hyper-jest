@@ -39,7 +39,7 @@ yarn build                  # type-check (host, worker and test tsconfigs) + pro
 yarn build:dev              # fast dev bundles with source maps
 yarn watch                  # rebuild on change (used by .vscode/launch.json "Run HyperJest (dev host)")
 yarn test                   # HyperJest's own unit tests (jest 29.7 + ts-jest, ~420 tests, no vscode)
-yarn test:it                # gated integration tests: real jest 29.7 driven through the worker/reporter
+yarn test:integration       # gated integration tests: real jest 29.7 driven through the worker/reporter
 yarn package                # build + vsce package -> hyperjest.vsix
 yarn install-extension      # package + code --install-extension hyperjest.vsix --force
 ```
@@ -156,7 +156,7 @@ directory; repeat `--repo` to inspect multiple directories. The parser corpus te
 
 ## Verification checklist (before a release)
 
-1. `yarn build && yarn test && yarn test:it` green.
+1. `yarn build && yarn test && yarn test:integration` green.
 2. `yarn package`; `code --install-extension hyperjest.vsix --force`; reload.
 3. Open a test in a project with installed dependencies → green squares in the
    test and source files; break an `expect` → red line + Problems entry; `console.log` inline;
