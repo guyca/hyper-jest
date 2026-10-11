@@ -10,11 +10,9 @@ HyperJest is a VS Code extension that runs your project's own Jest and shows tes
 
 ## Install from source
 
-You need Node.js 22 or later, VS Code 1.134 or later, and the VS Code `code` command on your PATH. From the repository root:
+You need Node.js 22 or later, Yarn 4.18.0, VS Code 1.134 or later, and the VS Code `code` command on your PATH. From the repository root:
 
 ```bash
-corepack enable
-corepack install
 yarn install --immutable
 yarn install-extension
 ```

@@ -22,7 +22,7 @@ Test Explorer.
 
 ## Toolchain
 
-- Node ≥ 22, Yarn 4.18.0 pinned in `package.json` via Corepack.
+- Node ≥ 22 and Yarn 4.18.0 (specified in `package.json`).
   Dependencies are exact-pinned in `package.json`; commit `yarn.lock` for reproducible installs.
 - `.yarnrc.yml`: `nodeLinker: node-modules`, `npmRegistryServer: https://registry.npmjs.org`,
   `defaultSemverRangePrefix: ""`, `enableScripts: false`,
@@ -33,8 +33,6 @@ Test Explorer.
 ## Commands
 
 ```bash
-corepack enable             # one-time: enable the Yarn shim
-corepack install            # download the pinned Yarn version
 yarn install --immutable    # install exactly yarn.lock; also sets up Husky's pre-commit hook
 yarn sanitize:lockfile      # strip registry-specific tarball URLs (also runs on staged lockfile commits)
 yarn build                  # type-check (host, worker and test tsconfigs) + production bundles into dist/
