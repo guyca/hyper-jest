@@ -18,7 +18,7 @@ jest.mock('vscode', () => {
       onDidChangeTextDocument: on('change'), onDidSaveTextDocument: on('save'), onDidOpenTextDocument: on('open'), onDidCloseTextDocument: on('close'),
       onDidCreateFiles: on('create'), onDidDeleteFiles: on('delete'), onDidRenameFiles: on('rename'),
     },
-    window: { ...fake.window, onDidChangeActiveTextEditor: on('active'), showWarningMessage: jest.fn(async () => undefined) },
+    window: { ...fake.window, onDidChangeActiveTextEditor: on('active'), showWarningMessage: jest.fn(async () => undefined), showInformationMessage: jest.fn(async () => undefined) },
   };
 });
 jest.mock('../../../src/cliEngine', () => ({ runCli: jest.fn(), findRelatedTests: jest.fn(async () => []) }));
@@ -295,6 +295,39 @@ describe('RunCoordinator readiness and documents', () => {
     await runner.runLine(A, 2, 'run');
     await tick();
     expect(w1.runs()[0].tests).toEqual([{ path: A, names: ['d b'] }]);
+  });
+
+  it('Run Line maps shifted lines back to the last good parse instead of choosing a neighbour or the file', async () => {
+    const { runner, w1, complete } = setup();
+    await runner.start();
+    const good = "describe('d', () => {\n  test('a', () => {});\n  test('b', () => {});\n});\n";
+    runner.docs.update(A, good);
+    const broken = good.replace("  test('a'", "  const x = {{;\n  test('a'");
+    __state.textDocuments.push(makeDocument(A, broken));
+    expect(runner.docs.ensure(A)?.nodes).toEqual([]);
+    expect(runner.docs.lookupAtLine(A, 1)).toBeUndefined(); // newly inserted, unparseable line
+    expect(runner.docs.lookupAtLine(A, 2)?.line).toBe(1); // a moved from line 2 to 3
+    expect(runner.docs.lookupAtLine(A, 3)?.line).toBe(2); // b moved from line 3 to 4
+
+    await runner.runLine(A, 2, 'run');
+    await tick();
+    expect(w1.runs()[0].tests).toEqual([{ path: A, names: ['d a'] }]);
+    complete(w1, w1.runs()[0].runId);
+    await tick();
+    await runner.runLine(A, 3, 'run');
+    await tick();
+    expect(w1.runs()[1].tests).toEqual([{ path: A, names: ['d b'] }]);
+  });
+
+  it('Run Line does not run the whole file for a line added after the last good parse', async () => {
+    const { runner, w1 } = setup();
+    await runner.start();
+    const good = "test('a', () => {});\n";
+    runner.docs.update(A, good);
+    __state.textDocuments.push(makeDocument(A, `const x = {{;\n${good}`));
+    await runner.runLine(A, 0, 'run');
+    await tick();
+    expect(w1.runs()).toHaveLength(0);
   });
 
   it('closing a virtual document with the same fsPath keeps the real document\'s parse', async () => {
