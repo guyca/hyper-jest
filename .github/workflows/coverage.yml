@@ -46,14 +46,9 @@ jobs:
       - name: Run tests and refresh coverage badge
         run: yarn test:coverage
 
-      - name: Commit updated badge
+      # Keep generated badges off master, which requires passing PR checks.
+      - name: Publish updated badge
         run: |
-          git add .github/media/coverage.svg
-          if git diff --cached --quiet; then
-            echo "Coverage badge is unchanged."
-            exit 0
-          fi
-
           # A newer push gets its own run; never publish coverage for stale code.
           git fetch origin master
           if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/master)" ]; then
@@ -61,7 +56,22 @@ jobs:
             exit 0
           fi
 
+          cp .github/media/coverage.svg "$RUNNER_TEMP/coverage.svg"
+          git restore .github/media/coverage.svg
+          if git ls-remote --exit-code --heads origin coverage-badge; then
+            git fetch origin coverage-badge
+            git switch --force-create coverage-badge FETCH_HEAD
+          else
+            git switch --orphan coverage-badge
+          fi
+          cp "$RUNNER_TEMP/coverage.svg" coverage.svg
+          git add coverage.svg
+          if git diff --cached --quiet; then
+            echo "Coverage badge is unchanged."
+            exit 0
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "docs: refresh coverage badge"
-          git push origin HEAD:master
+          git push origin HEAD:coverage-badge
