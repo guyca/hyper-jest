@@ -114,7 +114,10 @@ unresolved critical or security findings. This does not submit a request-changes
 review; require the `Cursor code review` check in branch rules if it should gate merges.
 
 Review dependencies are separate from the extension and locked in
-`.github/scripts/code-review/package-lock.json`. To validate them locally:
+`.github/scripts/code-review/package-lock.json`. The pinned Cursor SDK 1.0.19
+imports `@connectrpc/connect-node` at runtime but omits it from its production
+dependencies, so the review package declares it explicitly. Keep it aligned with
+the locked `@connectrpc/connect` version. To validate them locally:
 
 ```bash
 cd .github/scripts/code-review
