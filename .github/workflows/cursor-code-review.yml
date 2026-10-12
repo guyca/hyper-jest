@@ -1,0 +1,82 @@
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: cursor-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  code-review:
+    name: Cursor code review
+    # Fork and Dependabot PRs do not have access to the Cursor secret or a write token.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BLOCKING_REVIEW: ${{ vars.BLOCKING_REVIEW || 'false' }}
+    steps:
+      - name: Check Cursor API key
+        id: cursor
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          if [ -n "$CURSOR_API_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cursor review skipped. Add the CURSOR_API_KEY repository secret to enable it."
+          fi
+
+      - name: Checkout repository
+        if: steps.cursor.outputs.enabled == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        if: steps.cursor.outputs.enabled == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install review dependencies
+        if: steps.cursor.outputs.enabled == 'true'
+        working-directory: .github/scripts/code-review
+        run: |
+          npm ci --ignore-scripts
+          npm run type-check
+
+      - name: Perform automated code review
+        if: steps.cursor.outputs.enabled == 'true'
+        working-directory: .github/scripts/code-review
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          MODEL: auto
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: npm run review
+
+      - name: Check blocking review results
+        if: steps.cursor.outputs.enabled == 'true' && env.BLOCKING_REVIEW == 'true'
+        run: |
+          if [ "${CRITICAL_ISSUES_FOUND:-false}" = "true" ]; then
+            echo "::error::Cursor found critical or security issues and BLOCKING_REVIEW is enabled."
+            exit 1
+          fi
