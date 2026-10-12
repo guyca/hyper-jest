@@ -1,0 +1,21 @@
+{
+  "name": "hyperjest-code-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "review": "tsx src/index.ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cursor/sdk": "1.0.19"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
+  }
+}

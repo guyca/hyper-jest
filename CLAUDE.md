@@ -94,6 +94,34 @@ If editing dependency entries by hand, run `yarn install` to update the lockfile
 with `yarn install --immutable`. For `@types/vscode`, bump `engines.vscode` to the same major.minor.
 Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist/worker/*.cjs` (expect 0).
 
+## Cursor code review
+
+`.github/workflows/cursor-code-review.yml` runs the Cursor SDK review on opened,
+updated, reopened, and ready-for-review PRs. It skips drafts, forks, and Dependabot
+PRs. Reviews post short inline findings, revisit previous findings, and keep one
+summary comment up to date. The prompt focuses on HyperJest's worker, Jest, and
+VS Code architecture. The setup follows Clippit's Cursor review workflow.
+
+Add a repository Actions secret named `CURSOR_API_KEY` in
+[Settings → Secrets and variables → Actions](https://github.com/guyca/hyper-jest/settings/secrets/actions).
+Generate the key manually from the Cursor dashboard. Until the secret is present,
+the workflow exits successfully with a notice. After adding it, rerun the workflow
+on an eligible PR or push a new commit to trigger a review.
+
+Reviews are advisory by default. Set the repository Actions variable
+`BLOCKING_REVIEW` to `true` to fail the review check when the agent reports
+unresolved critical or security findings. This does not submit a request-changes
+review; require the `Cursor code review` check in branch rules if it should gate merges.
+
+Review dependencies are separate from the extension and locked in
+`.github/scripts/code-review/package-lock.json`. To validate them locally:
+
+```bash
+cd .github/scripts/code-review
+npm ci --ignore-scripts
+npm run type-check
+```
+
 ## Coverage badge
 
 Run `yarn test:coverage` to measure line coverage across `src/` and refresh `.github/media/coverage.svg` locally.
