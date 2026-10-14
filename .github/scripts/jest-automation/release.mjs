@@ -449,9 +449,13 @@ async function main() {
   if (command === 'report') {
     const runUrl = `https://github.com/${api.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
     const success = process.env.RELEASE_RESULT === 'success';
-    if (candidate.releaseKind === 'manual') return summary(success
-      ? `Released ${candidate.tag}. [Workflow](${runUrl}).`
-      : `Manual release of ${candidate.tag} did not complete. Retry release_pr=${candidate.prNumber} after resolving the failure; the reserved VSIX is retained. [Workflow](${runUrl}).`);
+    if (candidate.releaseKind === 'manual') {
+      await summary(success
+        ? `Released ${candidate.tag}. [Workflow](${runUrl}).`
+        : `Manual release of ${candidate.tag} did not complete. Retry release_pr=${candidate.prNumber} after resolving the failure; the reserved VSIX is retained. [Workflow](${runUrl}).`);
+      if (success) await api.dispatch();
+      return;
+    }
     try {
       await api.report(candidate.prNumber, success
         ? `Released **${candidate.tag}** to [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=${EXTENSION_ID}) and [GitHub Releases](https://github.com/${api.repo}/releases/tag/${candidate.tag}). [Workflow](${runUrl}).`
