@@ -11,7 +11,7 @@ export function validateEntries(entries) {
   for (const path of required) if (!entries.includes(path)) throw new Error(`VSIX is missing ${path}`);
   for (const path of entries) {
     if (path.includes('..') || path.startsWith('/') || path.includes('\\')) throw new Error(`Unsafe archive path: ${path}`);
-    if (/^extension\/(?:\.github\/(?:scripts|workflows)\/|(?:node_modules|src|tests|scripts|\.yarn|\.husky)\/)/.test(path)
+    if (/^extension\/(?:\.github\/(?:scripts|workflows)\/|(?:node_modules|src|tests|scripts|coverage|\.yarn|\.husky)\/)/.test(path)
       || /\.(?:map|pem|key)$/.test(path) || /(?:^|\/)\.env(?:\.|$)/.test(path)
       || /\/(?:AGENTS|CLAUDE)\.md$/.test(path)) throw new Error(`Unexpected development file: ${path}`);
   }

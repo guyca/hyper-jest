@@ -13,7 +13,7 @@ test('package requires all runtime entry points', () => {
 });
 test('package excludes automation, dependencies, secrets, and source maps', () => {
   for (const file of ['.github/scripts/repair.mjs', '.github/workflows/release.yml', 'node_modules/a/index.js',
-    'dist/extension.js.map', '.env.production', 'credentials.pem', '../escaped', 'AGENTS.md']) {
+    'coverage/index.html', 'dist/extension.js.map', '.env.production', 'credentials.pem', '../escaped', 'AGENTS.md']) {
     assert.throws(() => validateEntries([...valid, `extension/${file}`]));
   }
 });

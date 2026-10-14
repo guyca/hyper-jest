@@ -145,7 +145,7 @@ with zipfile.ZipFile(p) as z:
     files=sorted(n for n in names if n.startswith('extension/') and not n.endswith('/'))
     required=['package.json','dist/extension.js','dist/discoveryWorker.js','dist/worker/hyperjestWorker.cjs','dist/worker/reporter.cjs','dist/worker/overlayPreload.cjs']
     if any('extension/'+n not in files for n in required): raise ValueError('Missing production bundle')
-    if any(n.startswith(('extension/node_modules/','extension/src/','extension/tests/','extension/scripts/','extension/.github/scripts/','extension/.github/workflows/')) for n in files):
+    if any(n.startswith(('extension/node_modules/','extension/src/','extension/tests/','extension/scripts/','extension/coverage/','extension/.github/scripts/','extension/.github/workflows/')) for n in files):
         raise ValueError('Development files found in VSIX')
     manifest=json.loads(z.read('extension/package.json'))
     digest=hashlib.sha256()
