@@ -102,12 +102,24 @@ used for setup owns publisher `GuyCarmeli` before granting publishing access.
    [app registration](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app).
 3. Under the app's **Certificates & secrets → Federated credentials**, add a
    **GitHub Actions** credential for organization `guyca`, repository `hyper-jest`,
-   entity type **Environment**, and environment `marketplace`:
+   **Organization ID** `12352397`, **Repository ID** `1412723838`, entity type
+   **Environment**, and environment `marketplace`. Read the repository's current
+   OIDC configuration instead of assuming the older name-only format:
+
+   ```sh
+   gh api repos/guyca/hyper-jest/actions/oidc/customization/sub
+   ```
+
+   This repository uses immutable subjects (`use_immutable_subject: true`), with
+   `sub_claim_prefix` equal to `repo:guyca@12352397/hyper-jest@1412723838`.
+   Append `:environment:marketplace` for these publishing jobs. See
+   [GitHub's immutable subject reference](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims)
+   and [Microsoft's federation guidance](https://learn.microsoft.com/en-us/entra/workload-id/workload-identities-github-immutable-subjects).
 
 | Setting | Value |
 | --- | --- |
 | Issuer | `https://token.actions.githubusercontent.com` |
-| Subject | `repo:guyca/hyper-jest:environment:marketplace` |
+| Subject | `repo:guyca@12352397/hyper-jest@1412723838:environment:marketplace` |
 | Audience | `api://AzureADTokenExchange` |
 
 4. Store the application and directory IDs as `AZURE_CLIENT_ID` and
