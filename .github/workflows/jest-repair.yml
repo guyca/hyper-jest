@@ -17,6 +17,8 @@ permissions: {}
 # manual retries and workflow_run events whose pull_requests array is empty.
 concurrency:
   group: jest-dependency-repair
+  # Keep queued CI completions: the default single pending slot drops older events.
+  queue: max
   cancel-in-progress: false
 
 jobs:
