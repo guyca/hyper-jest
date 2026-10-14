@@ -45,7 +45,13 @@ function fakeApi() {
     createTag: async (name, sha) => { calls.push('createTag'); tag = sha; },
     createRelease: async data => { calls.push('createRelease'); release = { ...data, id: 1, assets: [], html_url: 'https://example.test/release' }; return release; },
     updateRelease: async (id, data) => {
-      assert.equal(data.tag_name, release.tag_name, 'Every release update must preserve its version tag');
+      let expectedTag = release.tag_name;
+      if (release.draft && release.tag_name?.startsWith('untagged-')) {
+        const record = parseMarker(release.body, 'hyperjest-release');
+        assert.match(record?.version ?? '', /^\d+\.\d+\.\d+$/, 'An untagged reservation must record its release version');
+        expectedTag = `v${record.version}`;
+      }
+      assert.equal(data.tag_name, expectedTag, 'Every release update must preserve its version tag');
       calls.push(data.draft === false ? 'finalize' : 'updateRelease'); Object.assign(release, data); return release;
     },
     uploadAsset: async (id, name, bytes) => {
@@ -206,6 +212,65 @@ test('reservation before authentication retains bytes without publishing and a l
   assert.equal(publishCalls, 1);
   assert.equal(api.calls.filter(call => call === `upload:${candidate.artifactName}`).length, 1);
   assert.equal((await api.release(candidate.tag)).draft, false);
+});
+
+test('untagged draft recovery reuses the original release and VSIX through finalization', async t => {
+  const { api, output, directory, source, manifest } = await fixture(t);
+  const original = await readFile(source);
+  const { release: reservation } = await reserveRelease(api, candidate, output);
+  const originalAssetIds = reservation.assets.map(asset => asset.id);
+  reservation.tag_name = 'untagged-original';
+  await rm(source);
+  await rm(output, { recursive: true });
+
+  // Exercise the real adapter's untagged-draft lookup during planning and
+  // reservation, with all writes still handled by the in-memory GitHub API.
+  const storedRelease = api.release;
+  const lookup = new GitHubApi(api.repo, 'test-token', async url => {
+    const release = await storedRelease();
+    if (String(url).includes('/releases/tags/')) return release.draft
+      ? new Response('', { status: 404 }) : Response.json(release);
+    return Response.json([release]);
+  });
+  api.release = tag => lookup.release(tag);
+  const planned = (await planRelease(api)).candidate;
+  assert.equal(planned.existingAssetId, reservation.assets.find(asset => asset.name === candidate.artifactName).id);
+  const restored = path.join(directory, 'restored-untagged');
+  await stageArtifact(api, planned, restored, '/nonexistent-build.vsix');
+  let publishCalls = 0;
+  await publishRelease(api, {
+    version: async () => null, latestVersion: async () => null,
+    publish: async filename => {
+      publishCalls++;
+      assert.deepEqual(await readFile(filename), original);
+      const draft = await api.release(candidate.tag);
+      assert.equal(draft.id, reservation.id);
+      assert.equal(draft.tag_name, candidate.tag);
+      assert.equal(draft.draft, true);
+    },
+    verify: async (_, actual) => assert.equal(actual.sha256, manifest.sha256),
+  }, planned, restored);
+  const published = await api.release(candidate.tag);
+  assert.equal(published.id, reservation.id);
+  assert.equal(published.tag_name, candidate.tag);
+  assert.equal(published.draft, false);
+  assert.deepEqual(published.assets.map(asset => asset.id), originalAssetIds);
+  assert.equal(await api.tagTarget(candidate.tag), candidate.mergeSha);
+  assert.equal(publishCalls, 1);
+  assert.equal(api.calls.filter(call => call === 'createRelease').length, 1);
+  assert.equal(api.calls.filter(call => call === `upload:${candidate.artifactName}`).length, 1);
+});
+
+test('release test API rejects omitted or conflicting version tags during recovery and after assignment', async t => {
+  const { api, output } = await fixture(t);
+  const { release } = await reserveRelease(api, candidate, output);
+  for (const currentTag of ['untagged-original', candidate.tag]) {
+    release.tag_name = currentTag;
+    for (const data of [{ body: 'Omitted tag' }, { tag_name: 'v9.9.9' }]) {
+      await assert.rejects(api.updateRelease(release.id, data), /preserve its version tag/);
+      assert.equal(release.tag_name, currentTag);
+    }
+  }
 });
 
 test('retry after Marketplace success reuses draft bytes and never publishes twice', async t => {
