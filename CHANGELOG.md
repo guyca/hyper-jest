@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Fix the Marketplace icon dimensions and add HyperJest branding to the README.
+- Allow manually requested releases of merged version bumps through the validated Marketplace publishing workflow.
+
 ## 0.2.0
 
 - Repair compatibility with Jest 30.5.2 (PR #30); guaranteed Jest majors: 28, 29, 30.
