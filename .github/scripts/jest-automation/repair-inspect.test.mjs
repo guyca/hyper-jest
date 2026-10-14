@@ -21,7 +21,7 @@ async function inspect(t, options = {}) {
   const repository = 'guyca/hyper-jest';
   const originalPackage = { version: '0.1.0', scripts: { test: 'jest' }, devDependencies: { jest: '29.7.0' } };
   const currentPackage = { ...originalPackage, scripts: { ...originalPackage.scripts, 'test:automation': 'node --test' } };
-  const proposedPackage = { ...originalPackage, version: options.state ? '0.2.0' : '0.1.0', devDependencies: { jest: '30.2.0' } };
+  const proposedPackage = { ...originalPackage, version: options.state ? '0.2.0' : '0.1.0', devDependencies: { jest: options.jestVersion ?? '30.2.0' } };
   const pr = { number: 30, state: 'open', draft: false, user: { login: 'dependabot[bot]' }, head: { sha: head, ref: 'dependabot/npm_and_yarn/jest', repo: { full_name: repository } }, base: { ref: 'master', repo: { full_name: repository } } };
   const conclusion = options.conclusion ?? 'failure';
   const run = { id: 10, name: 'CI', workflow_id: 1, status: 'completed', conclusion, head_sha: options.staleRun ? sha('d') : head, event: 'pull_request', head_repository: { full_name: repository } };
@@ -104,6 +104,28 @@ test('initial dependency-only PR uses its merge base when master scripts have ad
   assert.equal(result.outputs.repair, 'true');
   assert.equal(result.saved.attempts.length, 1);
   assert(result.requests.some(request => request.path.startsWith('compare/')));
+});
+
+test('automatic CI completions without a stable root Jest upgrade skip without repair state or writes', async t => {
+  for (const jestVersion of ['29.7.0', '28.1.3', '31.0.0-beta.1', '^30.2.0']) {
+    for (const conclusion of ['success', 'failure', 'timed_out']) {
+      const result = await inspect(t, { jestVersion, conclusion });
+      assert.deepEqual(result.outputs, { repair: 'false' });
+      assert.equal(result.saved, undefined);
+      assert(result.requests.every(request => request.method === 'GET'));
+      assert(!result.requests.some(request => request.path === 'issues/30/comments'));
+    }
+  }
+});
+
+test('manual requests without a stable root Jest upgrade retain the eligibility error', async t => {
+  for (const jestVersion of ['29.7.0', '28.1.3', '31.0.0-beta.1', '^30.2.0']) {
+    const result = await inspect(t, { jestVersion, manual: true, exitCode: 1 });
+    assert.deepEqual(result.outputs, { repair: 'false' });
+    assert.equal(result.saved, undefined);
+    assert.match(result.stderr, /PR must increase the actual root Jest dependency|Expected an exact stable version/);
+    assert(result.requests.every(request => request.method === 'GET'));
+  }
 });
 
 test('missing credentials never reserve or consume a repair attempt', async t => {
