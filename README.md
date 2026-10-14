@@ -1,4 +1,9 @@
-# HyperJest
+<div>
+    <center>
+    <img src=".github/media/icon.png" alt="HyperJest logo" width="128" height="128">
+    <h1>HyperJest</h1>
+    </center>
+</div>
 
 ![Test line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fguyca%2Fhyper-jest%2Fcoverage-badge%2Fcoverage.json)
 
