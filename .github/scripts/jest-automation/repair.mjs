@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
-  ASSIGNEE, READY_LABEL, assertCompatibility, assertEligiblePr, assertFresh, assertJestUpgrade,
+  ASSIGNEE, MAX_ATTEMPTS, READY_LABEL, assertCompatibility, assertEligiblePr, assertFresh, assertJestUpgrade,
   assertAgentPaths, assertPackagePreserved, decideAttempt, formatState, parseState, releaseMetadata, rootJest,
 } from './repair-policy.mjs';
 
@@ -107,7 +107,7 @@ async function inspect() {
   const refresh = manual && current.state.attempts.length > 0 && latest.conclusion === 'success' &&
     (current.state.headSha !== pr.head.sha || current.state.baseSha !== master || current.state.status === 'stale' || pendingRefresh);
   if (latest.conclusion === 'success' && !refresh) {
-    if (!['pushed', 'ready'].includes(current.state.status)) return;
+    if (!['pushed', 'ready', 'ci_failed'].includes(current.state.status)) return;
     if (current.state.headSha !== pr.head.sha || current.state.baseSha !== master) {
       await removeReady(number);
       await saveState(number, current, { ...current.state, status: 'stale' }, 'CI passed, but the PR head or master changed since the repair. Rerun the repair workflow manually to refresh release metadata and validate before release.');
@@ -123,6 +123,17 @@ async function inspect() {
     return;
   }
   if (!refresh && !['failure', 'timed_out'].includes(latest.conclusion)) return;
+  const validatedRevision = ['ready', 'ci_failed'].includes(current.state.status) &&
+    current.state.headSha === pr.head.sha && current.state.baseSha === master;
+  // A failed rerun revokes readiness, but must not spend an automatic attempt
+  // on an unchanged revision that already passed. Keep recovery possible even
+  // when a manual request has no remaining agent budget.
+  if (!refresh && validatedRevision && (!manual || current.state.attempts.length >= MAX_ATTEMPTS)) {
+    await removeReady(number);
+    await saveState(number, current, { ...current.state, status: 'ci_failed' }, `CI rerun [${latest.id}](https://github.com/${repository}/actions/runs/${latest.id}) failed for the previously validated revision. Release readiness is paused; no repair attempt was consumed. Rerun CI to restore readiness after it passes, or investigate manually. An explicit agent retry requires a remaining repair attempt.`);
+    await assign(number);
+    return;
+  }
   // Refreshes only regenerate trusted release metadata and rerun validation;
   // no agent runs, so they neither consume nor require an agent attempt.
   const decision = refresh ? 'repair' : decideAttempt({ state: current.state, headSha: pr.head.sha, manual });

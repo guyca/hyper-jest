@@ -50,6 +50,12 @@ at the inspected revisions. It uses a normal fast-forward push and does not
 force-push or merge. The controller assigns `guyca` and marks the exact repaired
 commit `jest-repair-ready` after ordinary PR CI passes.
 
+If a later CI rerun fails on that same PR head and master revision, release
+readiness pauses as `ci_failed` and the ready label is removed. This does not
+start another agent or consume an attempt. A passing rerun restores readiness;
+an explicit manual repair can still use a remaining attempt. Changes to the PR
+head or master follow the normal repair and metadata-refresh rules.
+
 There are at most two agent repair attempts per PR, each with a 20-minute agent timeout.
 Duplicate events do not spend another attempt. Failed or stale work is reported
 on the PR. A manual retry of failing CI still counts toward the same limit:

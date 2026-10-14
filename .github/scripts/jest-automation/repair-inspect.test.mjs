@@ -218,3 +218,64 @@ test('an older workflow cannot record the outcome of a newer metadata refresh', 
   assert.equal(stale.saved, undefined);
   assert.match(stale.stderr, /Another repair owns the state/);
 });
+
+test('a failed rerun of a ready revision pauses readiness without spending repair attempts', async t => {
+  for (const count of [1, 2]) {
+    for (const conclusion of ['failure', 'timed_out']) {
+      const state = { ...exhaustedState(), status: 'ready', baseSha: sha('b'), ciRunId: 9 };
+      state.attempts = state.attempts.slice(-count);
+      const failed = await inspect(t, { state, conclusion, labels: [{ name: 'jest-repair-ready' }, { name: 'dependencies' }] });
+      assert.equal(failed.outputs.repair, 'false');
+      assert.equal(failed.saved.status, 'ci_failed');
+      assert.deepEqual(failed.saved.attempts, state.attempts);
+      assert.equal(failed.saved.headSha, state.headSha);
+      assert.equal(failed.saved.baseSha, state.baseSha);
+      assert.deepEqual(failed.labels, [{ name: 'dependencies' }]);
+      assert(failed.requests.some(request => request.method === 'POST' && request.path === 'issues/30/assignees'));
+
+      const duplicate = await inspect(t, { state: failed.saved, conclusion });
+      assert.equal(duplicate.outputs.repair, 'false');
+      assert.deepEqual(duplicate.saved.attempts, state.attempts);
+
+      const green = await inspect(t, { state: duplicate.saved, conclusion: 'success' });
+      assert.equal(green.outputs.repair, 'false');
+      assert.equal(green.saved.status, 'ready');
+      assert.deepEqual(green.saved.attempts, state.attempts);
+      assert.deepEqual(green.labels, [{ name: 'jest-repair-ready' }]);
+    }
+  }
+});
+
+test('rerun protection does not suppress repairs for a changed head, master, or unvalidated push', async t => {
+  for (const change of [{ headSha: sha('c') }, { baseSha: sha('c') }, { status: 'pushed' }]) {
+    const state = { ...exhaustedState(), status: 'ready', baseSha: sha('b'), ...change };
+    state.attempts = state.attempts.slice(-1);
+    const result = await inspect(t, { state, labels: [{ name: 'jest-repair-ready' }] });
+    assert.equal(result.outputs.repair, 'true');
+    assert.equal(result.saved.attempts.length, 2);
+    assert.deepEqual(result.labels, []);
+  }
+});
+
+test('a paused repair needs metadata refresh if master advances before CI recovers', async t => {
+  const state = { ...exhaustedState(), status: 'ci_failed' };
+  const result = await inspect(t, { state, conclusion: 'success' });
+  assert.equal(result.saved?.status, 'stale');
+  assert.equal(result.outputs.repair, 'false');
+  assert.deepEqual(result.labels, []);
+});
+
+test('an explicit manual repair of a failed rerun still obeys the two-attempt budget', async t => {
+  for (const count of [1, 2]) {
+    const state = { ...exhaustedState(), status: 'ci_failed', baseSha: sha('b') };
+    state.attempts = state.attempts.slice(-count);
+    const result = await inspect(t, { state, manual: true });
+    assert.equal(result.outputs.repair, count === 1 ? 'true' : 'false');
+    assert.equal(result.saved.status, count === 1 ? 'repairing' : 'ci_failed');
+    assert.equal(result.saved.attempts.length, 2);
+    if (count === 2) {
+      const green = await inspect(t, { state: result.saved, conclusion: 'success' });
+      assert.equal(green.saved.status, 'ready');
+    }
+  }
+});
