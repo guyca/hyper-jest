@@ -1,0 +1,270 @@
+name: Jest dependency repair
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Dependabot PR number (retries still count toward the two-attempt limit)'
+        required: true
+        type: number
+
+permissions: {}
+
+# One controller at a time protects the persistent attempt record, including
+# manual retries and workflow_run events whose pull_requests array is empty.
+concurrency:
+  group: jest-dependency-repair
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      issues: write
+    outputs:
+      repair: ${{ steps.inspect.outputs.repair }}
+      pr_number: ${{ steps.inspect.outputs.pr_number }}
+      head_sha: ${{ steps.inspect.outputs.head_sha }}
+      base_sha: ${{ steps.inspect.outputs.base_sha }}
+      metadata_only: ${{ steps.inspect.outputs.metadata_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - id: inspect
+        name: Inspect trusted CI result and reserve a repair attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTEXT_PATH: ${{ runner.temp }}/repair-context.json
+          REPAIR_CONFIGURED: ${{ secrets.CURSOR_API_KEY != '' && vars.REPAIR_APP_ID != '' && secrets.REPAIR_APP_PRIVATE_KEY != '' }}
+        run: node .github/scripts/jest-automation/repair.mjs inspect
+      - if: steps.inspect.outputs.repair == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-context
+          path: ${{ runner.temp }}/repair-context.json
+          retention-days: 7
+
+  agent:
+    needs: inspect
+    if: needs.inspect.outputs.repair == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_DIR: ${{ github.workspace }}/candidate
+      PR_HEAD_SHA: ${{ needs.inspect.outputs.head_sha }}
+      MASTER_SHA: ${{ needs.inspect.outputs.base_sha }}
+      CONTEXT_PATH: ${{ github.workspace }}/repair-context/repair-context.json
+      HUSKY: '0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.inspect.outputs.base_sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.inspect.outputs.head_sha }}
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: repair-context
+          path: ${{ github.workspace }}/repair-context
+      - name: Merge the inspected master revision
+        run: node trusted/.github/scripts/jest-automation/repair.mjs prepare
+      - name: Install trusted Cursor SDK
+        if: needs.inspect.outputs.metadata_only != 'true'
+        working-directory: trusted/.github/scripts/code-review
+        run: npm ci --ignore-scripts && npm run type-check
+      - name: Install candidate dependencies without credentials
+        if: needs.inspect.outputs.metadata_only != 'true'
+        continue-on-error: true
+        working-directory: candidate
+        run: corepack enable && corepack install && yarn install --immutable
+      - name: Run bounded Cursor fix agent
+        if: needs.inspect.outputs.metadata_only != 'true'
+        timeout-minutes: 22
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          MODEL: ${{ vars.JEST_REPAIR_MODEL || 'auto' }}
+        run: trusted/.github/scripts/code-review/node_modules/.bin/tsx trusted/.github/scripts/code-review/src/jest-repair.ts
+      - name: Export candidate patch
+        env:
+          PATCH_PATH: ${{ runner.temp }}/agent.patch
+        run: node trusted/.github/scripts/jest-automation/repair.mjs export
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jest-agent-patch
+          path: ${{ runner.temp }}/agent.patch
+          retention-days: 7
+
+  validate:
+    needs: [inspect, agent]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    outputs:
+      tree: ${{ steps.patch.outputs.tree }}
+    env:
+      CANDIDATE_DIR: ${{ github.workspace }}/candidate
+      PR_NUMBER: ${{ needs.inspect.outputs.pr_number }}
+      PR_HEAD_SHA: ${{ needs.inspect.outputs.head_sha }}
+      MASTER_SHA: ${{ needs.inspect.outputs.base_sha }}
+      HUSKY: '0'
+      ALLOW_EMPTY_REPAIR: ${{ needs.inspect.outputs.metadata_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.inspect.outputs.base_sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.inspect.outputs.head_sha }}
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: jest-agent-patch
+          path: ${{ runner.temp }}/patch
+      - name: Merge master and validate the untrusted patch
+        id: patch
+        env:
+          PATCH_PATH: ${{ runner.temp }}/patch/agent.patch
+        run: |
+          node trusted/.github/scripts/jest-automation/repair.mjs prepare
+          node trusted/.github/scripts/jest-automation/repair.mjs apply
+      - name: Run complete release validation without secrets
+        working-directory: candidate
+        env:
+          EXPECTED_TREE: ${{ steps.patch.outputs.tree }}
+        run: |
+          corepack enable
+          corepack install
+          yarn install --immutable
+          yarn build
+          yarn test --ci --runInBand --coverage
+          yarn test:compatibility
+          yarn check:no-network
+          yarn package
+          yarn check:package
+          yarn test:automation
+          git diff --exit-code
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Export validated patch
+        env:
+          PATCH_PATH: ${{ runner.temp }}/validated.patch
+        run: node trusted/.github/scripts/jest-automation/repair.mjs export
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jest-validated-patch
+          path: ${{ runner.temp }}/validated.patch
+          retention-days: 7
+
+  push:
+    needs: [inspect, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      head_sha: ${{ steps.push.outputs.pushed_sha }}
+      version: ${{ steps.push.outputs.version }}
+    env:
+      CANDIDATE_DIR: ${{ github.workspace }}/candidate
+      PR_NUMBER: ${{ needs.inspect.outputs.pr_number }}
+      PR_HEAD_SHA: ${{ needs.inspect.outputs.head_sha }}
+      MASTER_SHA: ${{ needs.inspect.outputs.base_sha }}
+      ALLOW_EMPTY_REPAIR: ${{ needs.inspect.outputs.metadata_only }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.inspect.outputs.base_sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.inspect.outputs.head_sha }}
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: jest-validated-patch
+          path: ${{ runner.temp }}/patch
+      - name: Reconstruct master merge without executing project code
+        run: node trusted/.github/scripts/jest-automation/repair.mjs prepare
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.REPAIR_APP_ID }}
+          private-key: ${{ secrets.REPAIR_APP_PRIVATE_KEY }}
+          permission-contents: write
+      - id: push
+        name: Validate and push only if PR and master are unchanged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPAIR_PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VALIDATED_TREE: ${{ needs.validate.outputs.tree }}
+          PATCH_PATH: ${{ runner.temp }}/patch/validated.patch
+        run: node trusted/.github/scripts/jest-automation/repair.mjs push
+
+  record:
+    needs: [inspect, agent, validate, push]
+    if: always() && needs.inspect.outputs.repair == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.inspect.outputs.base_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Record outcome and assign maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.inspect.outputs.pr_number }}
+          MASTER_SHA: ${{ needs.inspect.outputs.base_sha }}
+          PUSH_RESULT: ${{ needs.push.result }}
+          PUSHED_SHA: ${{ needs.push.outputs.head_sha }}
+          RELEASE_VERSION: ${{ needs.push.outputs.version }}
+        run: node .github/scripts/jest-automation/repair.mjs record

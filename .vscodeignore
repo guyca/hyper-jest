@@ -1,5 +1,7 @@
 .vscode/**
 .github/workflows/**
+.github/scripts/**
+.github/dependabot.yml
 .husky/**
 src/**
 tests/**
@@ -16,6 +18,7 @@ yarn.lock
 **/*.ts
 .github/media/icon.svg
 .github/media/coverage.svg
+.github/media/coverage.json
 WALLABY_FEATURE_ANALYSIS.md
 CLAUDE.md
 AGENTS.md

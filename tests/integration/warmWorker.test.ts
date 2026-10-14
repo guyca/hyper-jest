@@ -1,6 +1,6 @@
 /**
- * End-to-end test of the warm worker against tests/fixtures/sample-project with this repo's real
- * jest 29.7. Gated: run with `yarn test:integration` after `yarn build:dev`.
+ * End-to-end test of the warm worker against an isolated copy of tests/fixtures/sample-project.
+ * HYPERJEST_JEST_PACKAGE selects the actual Jest runtime, independently of this suite's harness.
  *
  * Side effects on the fixture (cleaned up here): the `__snapshots__` dir written by `updateSnapshot:
  * 'new'` and a temporary slow test file used to prove mid-file cancellation.
@@ -8,6 +8,7 @@
 import { fork, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { copyRuntimeFixture, jestPackageDir, jestVersion } from '../helpers/jestRuntime';
 import { ResultStore } from '../../src/results/resultStore';
 import { selectAffected } from '../../src/core/affected';
 import {
@@ -20,7 +21,8 @@ const d = IT ? describe : describe.skip;
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const workerEntry = path.join(repoRoot, 'dist', 'worker', 'hyperjestWorker.cjs');
-const fixture = path.join(repoRoot, 'tests', 'fixtures', 'sample-project');
+const fixtureSource = path.join(repoRoot, 'tests', 'fixtures', 'sample-project');
+const fixture = IT ? copyRuntimeFixture(fixtureSource, 'warm') : fixtureSource;
 const testsDir = path.join(fixture, 'src', '__tests__');
 const mathTest = path.join(testsDir, 'math.test.js');
 const greetTest = path.join(testsDir, 'greet.test.js');
@@ -89,10 +91,10 @@ class WorkerClient {
 const flags: WorkerFlags = { coverage: true, perTestCoverage: true, liveComments: true, instrumentTestFiles: false, globalSetup: 'once', tsJestDiagnostics: 'keep', trace: false };
 
 function spec(): ProjectSpec {
-  const jestPkgDir = path.join(repoRoot, 'node_modules', 'jest');
+  const jestPkgDir = jestPackageDir;
   return {
     id: 'it-fixture', displayName: 'sample-project', repoRoot: fixture, packageDir: fixture, flavor: 'implicit', status: 'ok',
-    jestPkgDir, jestVersion: '29.7.0', jestBinPath: path.join(jestPkgDir, 'bin', 'jest.js'), nodePath: process.execPath, nodeArgs: [], env: {},
+    jestPkgDir, jestVersion, jestBinPath: path.join(jestPkgDir, 'bin', 'jest.js'), nodePath: process.execPath, nodeArgs: [], env: {},
     cliFilters: { testPathIgnorePatterns: [] }, e2ePatterns: [], warnings: [],
   };
 }
@@ -105,7 +107,7 @@ const resultOf = (msgs: Msg[], fullName: string): TestResultMsg => {
   return r;
 };
 
-d('warm worker (fixture, real jest 29.7)', () => {
+d(`warm worker (fixture, real Jest ${jestVersion})`, () => {
   let w: WorkerClient;
   let ready: ReadyMsg;
   const timings: Record<string, number> = {};
@@ -131,13 +133,15 @@ d('warm worker (fixture, real jest 29.7)', () => {
     fs.rmSync(slowTest, { force: true });
     // eslint-disable-next-line no-console
     console.log(`[warmWorker IT] timings: ${JSON.stringify(timings)}`);
+    fs.rmSync(fixture, { recursive: true, force: true });
   });
 
-  it('bootstraps with the chain-resolved jest 29.7 and all three seams', () => {
-    expect(ready.jestVersion.startsWith('29.')).toBe(true);
+  it('bootstraps with the selected chain-resolved Jest runtime and warm seams', () => {
+    expect(ready.jestVersion).toBe(jestVersion);
     expect(ready.nodeVersion).toBe(process.version);
     expect(ready.seams.envWrapper).toBe(true);
     expect(ready.seams.cachePrune).toBe(true);
+    expect(ready.seams.probeTransformer).toBe(true);
     expect(ready.configs).toHaveLength(1);
     expect(ready.configs[0]).toMatchObject({ rootDir: fixture, testMatch: ['**/__tests__/**/*.test.js'], runner: expect.stringContaining('jest-runner') });
     expect(ready.configs[0].testEnvironment).toContain('jest-environment-node');
@@ -192,6 +196,11 @@ d('warm worker (fixture, real jest 29.7)', () => {
       expect(c.testKey).toBeDefined();
     }
     expect(byType(msgs, 'fileResult').every(f => f.console === undefined)).toBe(true); // per-test tagging replaces file console
+
+    // The transform seam must preserve live comments, not just execute the original tests.
+    const values = byType(msgs, 'value');
+    expect(values.map(value => value.text)).toEqual(['"hello world"', '"hello bob"', '"hello snap"']);
+    expect(values.every(value => value.file === greetSrc && value.line === 5 && value.testKey)).toBe(true);
 
     // per-test coverage of math.js differs between tests
     const covOf = (name: string) => byType(msgs, 'testCoverage').find(c => c.testKey === resultOf(msgs, name).testKey)!;

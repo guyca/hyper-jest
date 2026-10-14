@@ -10,7 +10,7 @@
  *      or a `jest.config.*` / package.json `jest` key exists; `node --test` / mocha / wdio are notJest;
  *   4. selection: disabled > explicit configFiles > legacy configArg > native default > primary script;
  *   5. `jest` resolved by chain from the package, never `.bin`; missing -> unavailable,
- *      < 29 -> unsupported;
+ *      below the compatibility window -> unsupported;
  *   6. node picked by nodeResolver; warnings carry every fallback and incompatibility.
  *
  * Pure: no 'vscode', no process-global reads except through the injected `env`; fs/resolve/exec injectable.
