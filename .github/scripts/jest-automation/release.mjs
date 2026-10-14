@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { releaseRequest } from './release-http.mjs';
 
 export const REPAIR_LABEL = 'jest-repair-ready';
 export const RELEASE_MARKER = 'hyperjest-release';
@@ -251,7 +252,7 @@ export async function reserveRelease(api, candidate, directory) {
       await api.uploadAsset(release.id, name, bytes);
     }
   }
-  if (release.draft) release = await api.updateRelease(release.id, { body: releaseBody(candidate, manifest) });
+  if (release.draft) release = await api.updateRelease(release.id, { tag_name: candidate.tag, body: releaseBody(candidate, manifest) });
   return { release, filename, manifest };
 }
 
@@ -274,30 +275,29 @@ export async function publishRelease(api, marketplace, candidate, directory) {
   }
   await marketplace.verify(candidate, manifest);
   await assertTag(api, candidate);
-  release = await api.updateRelease(release.id, { draft: false, make_latest: 'true', body: releaseBody(candidate, manifest) });
+  release = await api.updateRelease(release.id, { tag_name: candidate.tag, draft: false, make_latest: 'true', body: releaseBody(candidate, manifest) });
   return { url: release.html_url, alreadyReleased: false };
 }
 
 export class GitHubApi {
-  constructor(repo, token, fetcher = fetch) {
+  constructor(repo, token, fetcher = fetch, wait = undefined) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo ?? '')) throw new Error('Invalid GITHUB_REPOSITORY.');
     if (!token) throw new Error('GH_TOKEN is required.');
-    this.repo = repo; this.token = token; this.fetcher = fetcher;
+    this.repo = repo; this.token = token; this.fetcher = fetcher; this.wait = wait;
   }
   async request(resource, { method = 'GET', data, binary = false, missing = false, upload = false } = {}) {
     const host = upload ? 'https://uploads.github.com' : 'https://api.github.com';
-    const response = await this.fetcher(`${host}/repos/${this.repo}/${resource}`, {
+    return releaseRequest(`${host}/repos/${this.repo}/${resource}`, {
       method, headers: {
         Authorization: `Bearer ${this.token}`, Accept: binary ? 'application/octet-stream' : 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         ...(data ? { 'Content-Type': Buffer.isBuffer(data) ? 'application/octet-stream' : 'application/json' } : {}),
       }, body: data ? (Buffer.isBuffer(data) ? data : JSON.stringify(data)) : undefined,
-      signal: AbortSignal.timeout(120_000),
+    }, {
+      label: `GitHub ${method} ${resource.split('?')[0]}`, fetcher: this.fetcher, wait: this.wait,
+      retry: method === 'GET', missing,
+      decode: async response => binary ? Buffer.from(await response.arrayBuffer()) : response.json(),
     });
-    if (missing && response.status === 404) return null;
-    if (!response.ok) throw new Error(`GitHub ${method} ${resource.split('?')[0]} failed (${response.status}).`);
-    if (response.status === 204) return null;
-    return binary ? Buffer.from(await response.arrayBuffer()) : response.json();
   }
   async pages(resource, field = null) {
     const items = [];
@@ -323,7 +323,19 @@ export class GitHubApi {
     const published = await this.request(`releases/tags/${encodeURIComponent(tag)}`, { missing: true });
     // The tag endpoint is documented for published releases. Authenticated lists
     // also include drafts, including a reservation made by an interrupted run.
-    return published ?? (await this.pages('releases')).find(release => release.tag_name === tag) ?? null;
+    if (published) return published;
+    const releases = await this.pages('releases');
+    const tagged = releases.find(release => release.tag_name === tag);
+    if (tagged) return tagged;
+    // Earlier body-only draft updates lost tag_name on GitHub. Recover the
+    // oldest reservation by its machine marker; callers still validate its
+    // complete source identity, tag target, and artifact checksums.
+    const drafts = releases.filter(release => {
+      const record = parseMarker(release.body, RELEASE_MARKER);
+      return release.draft && release.tag_name?.startsWith('untagged-') &&
+        record?.schemaVersion === 1 && record.extensionId === EXTENSION_ID && `v${record.version}` === tag;
+    }).sort((a, b) => a.id - b.id);
+    return drafts[0] ?? null;
   }
   async tagTarget(tag) {
     let object = (await this.request(`git/ref/tags/${encodeURIComponent(tag)}`, { missing: true }))?.object;

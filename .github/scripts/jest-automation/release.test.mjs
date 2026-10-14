@@ -44,7 +44,10 @@ function fakeApi() {
     release: async () => release, tagTarget: async () => tag,
     createTag: async (name, sha) => { calls.push('createTag'); tag = sha; },
     createRelease: async data => { calls.push('createRelease'); release = { ...data, id: 1, assets: [], html_url: 'https://example.test/release' }; return release; },
-    updateRelease: async (id, data) => { calls.push(data.draft === false ? 'finalize' : 'updateRelease'); Object.assign(release, data); return release; },
+    updateRelease: async (id, data) => {
+      assert.equal(data.tag_name, release.tag_name, 'Every release update must preserve its version tag');
+      calls.push(data.draft === false ? 'finalize' : 'updateRelease'); Object.assign(release, data); return release;
+    },
     uploadAsset: async (id, name, bytes) => {
       calls.push(`upload:${name}`); const asset = { id: nextAsset++, name, state: 'uploaded' };
       assets.set(asset.id, bytes); release.assets.push(asset); return asset;
@@ -350,7 +353,21 @@ test('Marketplace validation timeout never finalizes a release', async () => {
   let waits = 0;
   const marketplace = new Marketplace({ directory: '/unused', wait: async () => { waits++; }, fetcher: async () => new Response(JSON.stringify({ results: [] })) });
   await assert.rejects(marketplace.verify(candidate, { payloadHash: 'unused' }), /not finished validating/);
-  assert.equal(waits, 17);
+  assert.equal(waits, 48);
+});
+
+test('Marketplace validation can complete after the original three-minute window', async t => {
+  const { source, directory, manifest } = await fixture(t);
+  const bytes = await readFile(source);
+  let waits = 0;
+  const marketplace = new Marketplace({ directory, wait: async () => { waits++; }, fetcher: async url => {
+    if (!String(url).includes('extensionquery')) return new Response(bytes);
+    return Response.json({ results: [{ extensions: [{ publisher: { publisherName: 'GuyCarmeli' }, extensionName: 'hyperjest',
+      versions: waits < 24 ? [] : [{ version: candidate.version, assetUri: 'https://guyc.gallery.vsassets.io/package' }],
+    }] }] });
+  } });
+  await marketplace.verify(candidate, manifest);
+  assert.equal(waits, 24);
 });
 
 test('GitHub adapter accepts only successful native CI on the exact master commit', async () => {
@@ -367,6 +384,30 @@ test('GitHub release lookup recovers a draft omitted by the published tag endpoi
   const api = new GitHubApi('guyca/hyper-jest', 'test-token', async url => String(url).includes('/releases/tags/')
     ? new Response('', { status: 404 }) : new Response(JSON.stringify([draft])));
   assert.deepEqual(await api.release('v0.1.1'), draft);
+});
+
+test('GitHub release lookup recovers the oldest untagged reservation by release identity', async () => {
+  const draft = { id: 10, tag_name: 'untagged-original', draft: true, body: `<!-- hyperjest-release:${JSON.stringify(candidate)} -->` };
+  const newer = { ...draft, id: 20, tag_name: 'untagged-duplicate' };
+  const unrelated = { ...draft, id: 1, body: `<!-- hyperjest-release:${JSON.stringify({ ...candidate, extensionId: 'other.extension' })} -->` };
+  const api = new GitHubApi('guyca/hyper-jest', 'test-token', async url => String(url).includes('/releases/tags/')
+    ? new Response('', { status: 404 }) : Response.json([newer, unrelated, draft]));
+  assert.deepEqual(await api.release(candidate.tag), draft);
+  assert.equal(await api.release('v0.2.0'), null);
+});
+
+test('Marketplace version queries retry transient failures and keep validation flags', async () => {
+  let calls = 0;
+  const marketplace = new Marketplace({ directory: '/unused', wait: async () => {}, fetcher: async (url, options) => {
+    calls++;
+    assert.equal(options.method, 'POST');
+    assert.ok(JSON.parse(options.body).flags & 32);
+    if (calls === 1) throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+    if (calls === 2) return new Response('', { status: 503 });
+    return Response.json({ results: [] });
+  } });
+  assert.deepEqual(await marketplace.versions(true), []);
+  assert.equal(calls, 3);
 });
 
 test('VSIX identity and unpacked contents are checked without running extension code', async t => {

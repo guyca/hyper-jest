@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { compareVersions, EXTENSION_ID, inspectVsix } from './release.mjs';
+import { releaseRequest } from './release-http.mjs';
 
 const run = promisify(execFile);
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -13,15 +14,15 @@ export class Marketplace {
     this.directory = directory; this.fetcher = fetcher; this.wait = wait; this.publishCommand = publishCommand; this.runner = runner;
   }
   async versions(validated = false) {
-    const response = await this.fetcher('https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery?api-version=7.2-preview.1', {
+    const data = await releaseRequest('https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery?api-version=7.2-preview.1', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         filters: [{ criteria: [{ filterType: 7, value: EXTENSION_ID }], pageNumber: 1, pageSize: 1 }],
         assetTypes: [PACKAGE_ASSET], flags: 1 | 2 | 16 | 128 | (validated ? 32 : 0),
-      }), signal: AbortSignal.timeout(60_000),
+      }),
+    }, {
+      label: 'Marketplace version lookup', fetcher: this.fetcher, wait: this.wait, timeout: 60_000, retry: true,
     });
-    if (!response.ok) throw new Error(`Marketplace lookup failed (${response.status}).`);
-    const data = await response.json();
     if (!Array.isArray(data.results)) throw new Error('Marketplace returned an invalid query response.');
     const extension = data.results.flatMap(result => result.extensions ?? []).find(item =>
       `${item.publisher?.publisherName}.${item.extensionName}`.toLowerCase() === EXTENSION_ID.toLowerCase());
@@ -46,8 +47,9 @@ export class Marketplace {
     }
   }
   async verify(candidate, expected) {
-    // Marketplace validation is asynchronous. A timeout leaves the draft for retry.
-    for (let attempt = 0; attempt < 18; attempt++) {
+    // Allow eight minutes for asynchronous Marketplace validation, including
+    // first-publication scanning. A timeout leaves the draft for retry.
+    for (let attempt = 0; attempt < 49; attempt++) {
       const version = (await this.versions(true)).find(item => item.version === candidate.version && (!item.targetPlatform || item.targetPlatform === 'universal'));
       if (version) {
         const uri = version.files?.find(file => file.assetType === PACKAGE_ASSET)?.source ?? `${version.assetUri}/${PACKAGE_ASSET}`;
@@ -55,15 +57,17 @@ export class Marketplace {
         if (url.protocol !== 'https:' || !(url.hostname === 'marketplace.visualstudio.com' || url.hostname.endsWith('.vsassets.io') || url.hostname.endsWith('.gallerycdn.vsassets.io'))) {
           throw new Error('Marketplace returned an unexpected VSIX download host.');
         }
-        const response = await this.fetcher(url, { signal: AbortSignal.timeout(120_000) });
-        if (!response.ok) throw new Error(`Published VSIX download failed (${response.status}).`);
+        const bytes = await releaseRequest(url, {}, {
+          label: 'Published VSIX download', fetcher: this.fetcher, wait: this.wait, retry: true,
+          decode: async response => Buffer.from(await response.arrayBuffer()),
+        });
         const destination = path.join(this.directory, 'marketplace-verification.vsix');
-        await writeFile(destination, Buffer.from(await response.arrayBuffer()));
+        await writeFile(destination, bytes);
         const actual = await inspectVsix(destination, candidate);
         if (actual.payloadHash !== expected.payloadHash) throw new Error(`Marketplace version ${candidate.version} contains different extension files; refusing to claim this release.`);
         return;
       }
-      if (attempt < 17) await this.wait(10_000);
+      if (attempt < 48) await this.wait(10_000);
     }
     throw new Error(`Marketplace has not finished validating ${candidate.version}. Retry this workflow; it will reuse the same VSIX and verify before creating the public GitHub release.`);
   }
