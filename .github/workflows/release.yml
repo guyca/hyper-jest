@@ -156,6 +156,13 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
+      - name: Reserve draft release and exact VSIX before authentication
+        working-directory: controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node .github/scripts/jest-automation/release.mjs reserve
+          "$RUNNER_TEMP/candidate/release-candidate.json" "$RUNNER_TEMP/release-artifact"
       - name: Install pinned publication tool from trusted controller revision
         working-directory: controller
         env:
@@ -179,7 +186,7 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
-      - name: Reserve release, publish exact VSIX, and finalize GitHub release
+      - name: Publish retained VSIX and finalize GitHub release
         working-directory: controller
         env:
           GH_TOKEN: ${{ github.token }}

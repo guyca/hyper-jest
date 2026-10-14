@@ -90,3 +90,12 @@ test('publisher rejects forged release metadata despite an otherwise valid agent
   f.git('reset', '--hard', 'HEAD');
   assert.throws(() => f.run('verify'), /Unexpected release version/);
 });
+
+test('a lockfile cannot silently install an older dependency under a preserved new pin', t => {
+  const f = fixture(t);
+  mkdirSync(join(f.candidate, 'node_modules/jest'), { recursive: true });
+  f.write('node_modules/jest/package.json', { name: 'jest', version: '29.7.0' });
+  assert.throws(() => f.run('verify-installed'), /Installed jest must match the preserved exact dependency pin/);
+  f.write('node_modules/jest/package.json', { name: 'jest', version: '30.2.0' });
+  assert.doesNotThrow(() => f.run('verify-installed'));
+});

@@ -80,8 +80,29 @@ starts ordinary PR checks without a manual workflow approval.
 The extension identity is `GuyCarmeli.hyperjest`. Confirm that the Microsoft account
 used for setup owns publisher `GuyCarmeli` before granting publishing access.
 
-Use a dedicated Microsoft Entra application/service principal with a federated
-credential for GitHub Actions:
+1. Sign into the [Azure portal](https://portal.azure.com/) and check whether the
+   account already has a Microsoft Entra workforce directory that you can manage.
+   A personal Microsoft account alone is insufficient. If there is no directory
+   and Entra reports an account/tenant error, use Microsoft's
+   [Azure free-account signup](https://azure.microsoft.com/en-us/free/), selecting
+   **Try Azure for free** with the same account. Complete the identity checks and
+   agreement personally. Signup requires a phone number and non-prepaid credit or
+   debit card; Microsoft may place a temporary verification hold. The free offer
+   does not charge unless you choose to upgrade to pay-as-you-go. Use the initial
+   directory created during signup: creating additional workforce tenants in the
+   admin center is restricted to paid customers. See the official
+   [tenant setup instructions](https://learn.microsoft.com/en-us/entra/fundamentals/create-new-tenant)
+   and [signup requirements](https://azure.microsoft.com/en-us/pricing/purchase-options/azure-account).
+2. Switch to that directory in the Entra admin center. Under **App registrations →
+   New registration**, create a dedicated application, such as `HyperJest Marketplace`,
+   with the single-tenant account type and no redirect URI. Record its **Application
+   (client) ID** and **Directory (tenant) ID**. An app registration creates the
+   service principal used by this automation. No client secret, compute resource,
+   or Azure resource role assignment is needed. See
+   [app registration](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app).
+3. Under the app's **Certificates & secrets → Federated credentials**, add a
+   **GitHub Actions** credential for organization `guyca`, repository `hyper-jest`,
+   entity type **Environment**, and environment `marketplace`:
 
 | Setting | Value |
 | --- | --- |
@@ -89,15 +110,34 @@ credential for GitHub Actions:
 | Subject | `repo:guyca/hyper-jest:environment:marketplace` |
 | Audience | `api://AzureADTokenExchange` |
 
-Authorize that identity as a Contributor on Marketplace publisher `GuyCarmeli`, using
-its Azure DevOps identity identifier, not its application/client ID. Store
-`AZURE_CLIENT_ID` and `AZURE_TENANT_ID` as variables on the GitHub environment
-`marketplace`. No client secret or publishing PAT is required. The environment
-must allow only the `master` branch and have no required reviewers or wait timer.
-The workflow uses `azure/login` with no Azure subscription requirement, followed
-by the pinned local VSCE CLI with `--azure-credential`.
+4. Store the application and directory IDs as `AZURE_CLIENT_ID` and
+   `AZURE_TENANT_ID` variables on the GitHub environment `marketplace`. Restrict
+   that environment to `master`, with no required reviewers or wait timer.
+5. After this workflow is on `master`, run the identity probe:
+
+   ```sh
+   gh workflow run marketplace-identity.yml --ref master
+   ```
+
+   Its summary contains the **Azure DevOps profile ID** of the authenticated
+   service principal. The probe only authenticates and reads that profile; it
+   does not check out code, build, publish, or print an access token.
+6. In [Marketplace publisher management](https://marketplace.visualstudio.com/manage/publishers/GuyCarmeli),
+   open `GuyCarmeli` → **Members**, add the profile ID from the probe, and choose
+   **Contributor**. Use this profile ID, not the application/client ID or Entra
+   object ID. The probe's success confirms OIDC authentication; membership must
+   still be granted before the first release.
+
+No publishing PAT is required. The release workflow uses `azure/login` with no
+Azure subscription requirement, followed by the pinned local VSCE CLI with
+`--azure-credential`. An Entra directory remains when an Azure subscription
+expires, so this app registration does not require a running Azure workload or
+an upgrade to use paid compute. See Microsoft's
+[directory/subscription relationship](https://learn.microsoft.com/en-us/entra/fundamentals/how-subscriptions-associated-directory).
 
 See Microsoft's [extension publishing instructions](https://code.visualstudio.com/api/working-with-extensions/publishing-extension)
+and [service-principal publisher authorization](https://learn.microsoft.com/en-us/azure/devops/extend/publish/command-line?view=azure-devops#publish-with-a-microsoft-entra-token),
+plus [federated credential setup](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-create-trust)
 and [Azure Login OIDC guidance](https://github.com/Azure/login#login-with-openid-connect-oidc-recommended).
 
 ## Release lifecycle and recovery
@@ -110,10 +150,18 @@ repair record; a label alone cannot authorize publication.
 
 The build job has no publishing credentials. It builds the exact tested merge
 commit and retains `hyperjest-<version>.vsix`, checksums, and source metadata. The
-publish job reserves `v<version>` and a draft GitHub release, publishes that exact
-VSIX to Marketplace, then publishes the GitHub release with the same attachment.
+publish job reserves `v<version>` and a draft GitHub release with the exact VSIX
+before checking or authenticating the Marketplace identity. Authentication or
+publication-tool installation failures therefore retain the original package.
+The job then publishes that VSIX to Marketplace and publishes the GitHub release
+with the same attachment.
 
-Retries reuse an already retained artifact instead of rebuilding it. Tags,
+The Actions build artifact is retained for 90 days. Before any Marketplace publish
+attempt, the VSIX and checksums are attached to the draft GitHub release, where
+they remain available independently of Actions artifact expiration. Retries reuse
+that retained artifact instead of rebuilding it. If a reserved VSIX is deleted,
+restore the exact original attachment before retrying; removing its metadata
+cannot authorize a rebuild. Tags,
 versions, source metadata, and artifact hashes must agree. An existing Marketplace
 version is checked against the retained package before it is accepted as a
 successful retry. Conflicting artifacts stop the workflow instead of being

@@ -10,6 +10,7 @@ export const EXTENSION_ID = 'GuyCarmeli.hyperjest';
 const BOT = 'github-actions[bot]';
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const HASH = /^[a-f0-9]{64}$/;
 const IDENTITY_FIELDS = ['schemaVersion', 'prNumber', 'headSha', 'mergeSha', 'version', 'extensionId', 'artifactName'];
 
 export function compareVersions(a, b) {
@@ -49,6 +50,18 @@ function identity(candidate) {
 export function assertIdentity(actual, expected, description = 'Release') {
   if (!actual || IDENTITY_FIELDS.some(key => actual[key] !== expected[key])) {
     throw new Error(`${description} conflicts with PR #${expected.prNumber}, version ${expected.version}, source ${expected.mergeSha}. Refusing to replace it.`);
+  }
+}
+
+function reservedHashes(record) {
+  if (record.sha256 === undefined && record.payloadHash === undefined) return null;
+  if (!HASH.test(record.sha256) || !HASH.test(record.payloadHash)) throw new Error('Invalid reserved artifact checksums.');
+  return { sha256: record.sha256, payloadHash: record.payloadHash };
+}
+
+function assertArtifactHashes(actual, reserved) {
+  if (reserved && (reserved.sha256 !== actual.sha256 || reserved.payloadHash !== actual.payloadHash)) {
+    throw new Error('Retained VSIX fails its reserved checksum.');
   }
 }
 
@@ -95,12 +108,14 @@ export async function planRelease(api, requestedPr = null) {
   for (const candidate of candidates) {
     const release = await api.release(candidate.tag);
     if (release) {
-      assertIdentity(parseMarker(release.body, RELEASE_MARKER), candidate);
+      const record = parseMarker(release.body, RELEASE_MARKER);
+      assertIdentity(record, candidate);
       await assertTag(api, candidate);
       if (!release.draft) continue;
+      candidate.reservedHashes = reservedHashes(record);
       const packageAsset = release.assets?.find(asset => asset.name === candidate.artifactName && asset.state === 'uploaded');
       const manifestAsset = release.assets?.find(asset => asset.name === 'release-manifest.json' && asset.state === 'uploaded');
-      if (manifestAsset && !packageAsset) throw new Error(`${candidate.tag} lost its reserved VSIX. Restore it; rebuilding would change the reserved artifact.`);
+      if ((manifestAsset || candidate.reservedHashes) && !packageAsset) throw new Error(`${candidate.tag} lost its reserved VSIX. Restore it; rebuilding would change the reserved artifact.`);
       candidate.existingAssetId = packageAsset?.id ?? null;
       candidate.existingManifestId = manifestAsset?.id ?? null;
     }
@@ -170,12 +185,11 @@ export async function stageArtifact(api, candidate, directory, builtFile) {
   if (candidate.existingAssetId) await writeFile(filename, await api.asset(candidate.existingAssetId));
   else await writeFile(filename, await readFile(builtFile));
   const manifest = await inspectVsix(filename, candidate);
+  assertArtifactHashes(manifest, candidate.reservedHashes);
   if (candidate.existingManifestId) {
     const previous = JSON.parse((await api.asset(candidate.existingManifestId)).toString());
     assertIdentity(previous, candidate, 'Retained release artifact');
-    if (previous.sha256 !== manifest.sha256 || previous.payloadHash !== manifest.payloadHash) {
-      throw new Error('Retained VSIX fails its reserved checksum.');
-    }
+    assertArtifactHashes(manifest, previous);
   }
   await writeFile(path.join(directory, 'release-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(path.join(directory, 'SHA256SUMS'), `${manifest.sha256}  ${candidate.artifactName}\n`);
@@ -190,8 +204,8 @@ function releaseBody(candidate, manifest = null) {
     `Install the attached \`${candidate.artifactName}\` or update **HyperJest** from the VS Code Marketplace.`;
 }
 
-export async function publishRelease(api, marketplace, candidate, directory) {
-  // Re-read mutable eligibility immediately before obtaining publication side effects.
+export async function reserveRelease(api, candidate, directory) {
+  // Re-read mutable eligibility before reserving or resuming an immutable artifact.
   const fresh = await eligibleCandidate(api, await api.pull(candidate.prNumber));
   assertIdentity(fresh, candidate, 'Current PR eligibility');
   if (!(await api.successfulCi(candidate.mergeSha)) || !(await api.isOnMaster(candidate.mergeSha))) {
@@ -206,7 +220,15 @@ export async function publishRelease(api, marketplace, candidate, directory) {
   if (manifest.sha256 !== stagedManifest.sha256 || manifest.payloadHash !== stagedManifest.payloadHash) throw new Error('Staged artifact checksum mismatch.');
   const existingTarget = await assertTag(api, candidate, true);
   let release = await api.release(candidate.tag);
-  if (release) assertIdentity(parseMarker(release.body, RELEASE_MARKER), candidate);
+  if (release) {
+    const record = parseMarker(release.body, RELEASE_MARKER);
+    assertIdentity(record, candidate);
+    const reserved = reservedHashes(record);
+    assertArtifactHashes(manifest, reserved);
+    if (reserved && !release.assets?.some(asset => asset.name === candidate.artifactName && asset.state === 'uploaded')) {
+      throw new Error(`${candidate.tag} lost its reserved VSIX. Restore the retained artifact before retrying.`);
+    }
+  }
   if (!existingTarget) {
     await api.createTag(candidate.tag, candidate.mergeSha);
     await assertTag(api, candidate);
@@ -229,8 +251,15 @@ export async function publishRelease(api, marketplace, candidate, directory) {
       await api.uploadAsset(release.id, name, bytes);
     }
   }
+  if (release.draft) release = await api.updateRelease(release.id, { body: releaseBody(candidate, manifest) });
+  return { release, filename, manifest };
+}
+
+export async function publishRelease(api, marketplace, candidate, directory) {
+  // Revalidate the reservation immediately before Marketplace side effects, even
+  // when a preceding workflow step already retained it before authentication.
+  let { release, filename, manifest } = await reserveRelease(api, candidate, directory);
   if (!release.draft) return { url: release.html_url, alreadyReleased: true };
-  await api.updateRelease(release.id, { body: releaseBody(candidate, manifest) });
   let version = await marketplace.version(candidate.version);
   const latest = await marketplace.latestVersion();
   if (latest && compareVersions(latest, candidate.version) > 0) throw new Error(`Marketplace already has ${latest}; refusing to finalize older version ${candidate.version} as the latest release.`);
@@ -350,6 +379,10 @@ async function main() {
   }
   const candidate = JSON.parse(await readFile(candidateFile, 'utf8'));
   if (command === 'stage') return stageArtifact(api, candidate, directory, builtFile);
+  if (command === 'reserve') {
+    const { release } = await reserveRelease(api, candidate, directory);
+    return summary(`Retained ${candidate.tag} and its exact VSIX in ${release.html_url}. Marketplace publication has not been attempted by this step.`);
+  }
   if (command === 'publish') {
     const { Marketplace } = await import('./release-marketplace.mjs');
     const result = await publishRelease(api, new Marketplace({ directory }), candidate, directory);

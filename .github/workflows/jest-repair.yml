@@ -170,6 +170,7 @@ jobs:
           corepack enable
           corepack install
           yarn install --immutable
+          node ../trusted/.github/scripts/jest-automation/repair.mjs verify-installed
           yarn build
           yarn test --ci --runInBand --coverage
           yarn test:compatibility

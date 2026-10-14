@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   compareVersions, eligibleCandidate, GitHubApi, inspectVsix, parseMarker,
-  planRelease, publishRelease, releaseNotes, stageArtifact,
+  planRelease, publishRelease, releaseNotes, reserveRelease, stageArtifact,
 } from './release.mjs';
 import { Marketplace } from './release-marketplace.mjs';
 
@@ -177,6 +177,34 @@ test('publication reserves the original VSIX before Marketplace and finalizes la
   assert.equal(parseMarker(publishedRelease.body, 'hyperjest-release').sha256, manifest.sha256);
 });
 
+test('reservation before authentication retains bytes without publishing and a later run resumes them', async t => {
+  const { api, output, directory, source, manifest } = await fixture(t);
+  const original = await readFile(source);
+  const reserved = await reserveRelease(api, candidate, output);
+  assert.equal(reserved.release.draft, true);
+  assert.equal(await api.tagTarget(candidate.tag), candidate.mergeSha);
+  assert.equal(parseMarker(reserved.release.body, 'hyperjest-release').sha256, manifest.sha256);
+  assert.equal(api.calls.includes('finalize'), false);
+
+  // A failed login can end this runner after reservation. A new runner must use
+  // the draft attachment even when the original build and Actions artifact are gone.
+  await rm(source);
+  await rm(output, { recursive: true });
+  const planned = (await planRelease(api)).candidate;
+  assert.ok(planned.existingAssetId);
+  const restored = path.join(directory, 'after-authentication-retry');
+  await stageArtifact(api, planned, restored, '/nonexistent-build.vsix');
+  let publishCalls = 0;
+  await publishRelease(api, {
+    version: async () => null, latestVersion: async () => null,
+    publish: async filename => { publishCalls++; assert.deepEqual(await readFile(filename), original); },
+    verify: async (_, actual) => assert.equal(actual.sha256, manifest.sha256),
+  }, planned, restored);
+  assert.equal(publishCalls, 1);
+  assert.equal(api.calls.filter(call => call === `upload:${candidate.artifactName}`).length, 1);
+  assert.equal((await api.release(candidate.tag)).draft, false);
+});
+
 test('retry after Marketplace success reuses draft bytes and never publishes twice', async t => {
   const { api, output, directory, manifest } = await fixture(t);
   let publishCalls = 0;
@@ -195,6 +223,39 @@ test('retry after Marketplace success reuses draft bytes and never publishes twi
   await publishRelease(api, marketplace, plan.candidate, restored);
   assert.equal(publishCalls, 1);
   assert.equal((await api.release(candidate.tag)).draft, false);
+});
+
+test('deleting both retained VSIX and metadata cannot erase a draft artifact reservation', async t => {
+  const { api, output } = await fixture(t);
+  const market = {
+    version: async () => null, latestVersion: async () => null, publish: async () => {},
+    verify: async () => { throw new Error('Validation still pending'); },
+  };
+  await assert.rejects(publishRelease(api, market, candidate, output), /Validation still pending/);
+  const release = await api.release(candidate.tag);
+  release.assets = release.assets.filter(asset => asset.name === 'SHA256SUMS');
+  const previousBody = release.body;
+  await assert.rejects(planRelease(api), /lost its reserved VSIX/);
+  await assert.rejects(publishRelease(api, market, candidate, output), /lost its reserved VSIX/);
+  assert.equal(release.body, previousBody);
+});
+
+test('draft body checksums still bind retained and staged artifacts when metadata is missing', async t => {
+  const { api, output, directory } = await fixture(t);
+  const market = {
+    version: async () => null, latestVersion: async () => null, publish: async () => {},
+    verify: async () => { throw new Error('Validation still pending'); },
+  };
+  await assert.rejects(publishRelease(api, market, candidate, output), /Validation still pending/);
+  const release = await api.release(candidate.tag);
+  release.assets = release.assets.filter(asset => asset.name !== 'release-manifest.json');
+  const changed = await fixture(t, { displayName: 'Changed after reservation' });
+  const packageAsset = release.assets.find(asset => asset.name === candidate.artifactName);
+  api.assets.set(packageAsset.id, await readFile(changed.source));
+  const plan = await planRelease(api);
+  await assert.rejects(stageArtifact(api, plan.candidate, path.join(directory, 'restored'), '/unused'), /reserved checksum/);
+  await assert.rejects(publishRelease(api, market, candidate, changed.output), /reserved checksum/);
+  assert.equal(release.draft, true);
 });
 
 test('interrupted metadata upload recovers existing VSIX and replaces only a starter asset', async t => {

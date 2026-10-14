@@ -239,6 +239,19 @@ function exportPatch() {
   writeFileSync(process.env.PATCH_PATH, git('diff', '--cached', '--binary', 'HEAD'));
 }
 
+function verifyInstalled() {
+  // Immutable installs preserve the supplied lockfile; they do not ensure a
+  // descriptor's resolution agrees with its exact package.json version.
+  const pkg = readJson('package.json');
+  for (const field of ['dependencies', 'devDependencies']) {
+    for (const [name, version] of Object.entries(pkg[field] ?? {})) {
+      const installed = readJson(`node_modules/${name}/package.json`);
+      assert.equal(installed.name, name, `Unexpected installed package for ${name}`);
+      assert.equal(installed.version, version, `Installed ${name} must match the preserved exact dependency pin`);
+    }
+  }
+}
+
 async function push() {
   const pr = await api(`pulls/${prNumber}`);
   assertEligiblePr(pr, repository);
@@ -281,6 +294,7 @@ else if (command === 'prepare') prepare();
 else if (command === 'apply') applyPatch();
 else if (command === 'verify') applyPatch({ finalized: true });
 else if (command === 'export') exportPatch();
+else if (command === 'verify-installed') verifyInstalled();
 else if (command === 'push') await push();
 else if (command === 'record') await record();
 else throw new Error(`Unknown command: ${command}`);
