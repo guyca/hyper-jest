@@ -167,6 +167,19 @@ and [Azure Login OIDC guidance](https://github.com/Azure/login#login-with-openid
 
 ## Release lifecycle and recovery
 
+For a release unrelated to a Jest repair, merge a PR that bumps the extension
+version and adds its changelog section. Wait for successful push CI on the exact
+merge commit, then explicitly dispatch the same publishing workflow:
+
+```sh
+gh workflow run release.yml --ref master -f release_pr=<merged-version-bump-pr>
+```
+
+This manual path checks the version increase against the merge parent and uses
+the same immutable tag, retained VSIX, checksums, Marketplace verification, and
+retry behavior as repaired releases. It never runs automatically for ordinary
+PRs. Repeat the same command to resume a failed manual release.
+
 After you merge a repaired PR, successful CI on its exact merge commit makes it
 eligible for the release queue. Every master commit gets its own CI run. The
 serialized release workflow scans all marked merged PRs in merge order, so

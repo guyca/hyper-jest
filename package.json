@@ -2,7 +2,7 @@
   "name": "hyperjest",
   "displayName": "HyperJest",
   "description": "Multi-core Jest test runner for VS Code with real-time gutter coverage, inline errors and live values.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "GuyCarmeli",
   "private": true,
   "packageManager": "yarn@4.18.0",

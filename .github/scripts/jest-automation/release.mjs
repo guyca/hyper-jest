@@ -12,7 +12,7 @@ const BOT = 'github-actions[bot]';
 const SHA = /^[a-f0-9]{40}$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const HASH = /^[a-f0-9]{64}$/;
-const IDENTITY_FIELDS = ['schemaVersion', 'prNumber', 'headSha', 'mergeSha', 'version', 'extensionId', 'artifactName'];
+const IDENTITY_FIELDS = ['schemaVersion', 'prNumber', 'headSha', 'mergeSha', 'version', 'extensionId', 'artifactName', 'releaseKind'];
 
 export function compareVersions(a, b) {
   if (!VERSION.test(a) || !VERSION.test(b)) throw new Error('Release versions must be stable major.minor.patch values.');
@@ -94,6 +94,52 @@ export async function eligibleCandidate(api, pr) {
   };
 }
 
+export async function manualCandidate(api, pr) {
+  if (!pr.merged_at || pr.base?.ref !== 'master' || pr.head?.repo?.full_name !== api.repo ||
+      !SHA.test(pr.head?.sha) || !SHA.test(pr.merge_commit_sha)) {
+    throw new Error('Manual releases require a merged PR from this repository targeting master.');
+  }
+  const baseSha = await api.firstParent(pr.merge_commit_sha);
+  const [base, merged] = await Promise.all([api.manifest(baseSha), api.manifest(pr.merge_commit_sha)]);
+  if (`${merged.publisher}.${merged.name}` !== EXTENSION_ID || compareVersions(merged.version, base.version) <= 0) {
+    throw new Error('Manual release PR must increase the HyperJest version over its merge parent.');
+  }
+  return {
+    schemaVersion: 1, releaseKind: 'manual', prNumber: pr.number, headSha: pr.head.sha,
+    mergeSha: pr.merge_commit_sha, baseSha, version: merged.version, extensionId: EXTENSION_ID,
+    artifactName: `hyperjest-${merged.version}.vsix`, mergedAt: pr.merged_at, tag: `v${merged.version}`,
+  };
+}
+
+async function restoreReservation(api, candidate) {
+  const release = await api.release(candidate.tag);
+  if (!release) return true;
+  const record = parseMarker(release.body, RELEASE_MARKER);
+  assertIdentity(record, candidate);
+  await assertTag(api, candidate);
+  if (!release.draft) return false;
+  candidate.reservedHashes = reservedHashes(record);
+  const packageAsset = release.assets?.find(asset => asset.name === candidate.artifactName && asset.state === 'uploaded');
+  const manifestAsset = release.assets?.find(asset => asset.name === 'release-manifest.json' && asset.state === 'uploaded');
+  if ((manifestAsset || candidate.reservedHashes) && !packageAsset) throw new Error(`${candidate.tag} lost its reserved VSIX. Restore it; rebuilding would change the reserved artifact.`);
+  candidate.existingAssetId = packageAsset?.id ?? null;
+  candidate.existingManifestId = manifestAsset?.id ?? null;
+  return true;
+}
+
+export async function planManualRelease(api, requestedPr) {
+  const candidate = await manualCandidate(api, await api.pull(requestedPr));
+  if (!(await restoreReservation(api, candidate))) return { candidate: null, reason: `${candidate.tag} has already been released.` };
+  const ci = await api.successfulCi(candidate.mergeSha);
+  if (!ci || !(await api.isOnMaster(candidate.mergeSha))) {
+    throw new Error('Manual release requires successful push CI on the exact merged commit and master ancestry. Retry after CI passes.');
+  }
+  candidate.ciRunId = ci.id;
+  candidate.ciUrl = ci.html_url;
+  candidate.releaseNotes = releaseNotes(await api.changelog(candidate.mergeSha), candidate.version);
+  return { candidate, remaining: 0 };
+}
+
 export async function planRelease(api, requestedPr = null) {
   const candidates = [];
   for (const listed of await api.closedPulls()) {
@@ -107,19 +153,7 @@ export async function planRelease(api, requestedPr = null) {
   }
   const pending = [];
   for (const candidate of candidates) {
-    const release = await api.release(candidate.tag);
-    if (release) {
-      const record = parseMarker(release.body, RELEASE_MARKER);
-      assertIdentity(record, candidate);
-      await assertTag(api, candidate);
-      if (!release.draft) continue;
-      candidate.reservedHashes = reservedHashes(record);
-      const packageAsset = release.assets?.find(asset => asset.name === candidate.artifactName && asset.state === 'uploaded');
-      const manifestAsset = release.assets?.find(asset => asset.name === 'release-manifest.json' && asset.state === 'uploaded');
-      if ((manifestAsset || candidate.reservedHashes) && !packageAsset) throw new Error(`${candidate.tag} lost its reserved VSIX. Restore it; rebuilding would change the reserved artifact.`);
-      candidate.existingAssetId = packageAsset?.id ?? null;
-      candidate.existingManifestId = manifestAsset?.id ?? null;
-    }
+    if (!(await restoreReservation(api, candidate))) continue;
     pending.push(candidate);
   }
   if (!pending.length) return { candidate: null, reason: 'All eligible merged Jest repairs have already been released.' };
@@ -200,14 +234,15 @@ export async function stageArtifact(api, candidate, directory, builtFile) {
 function releaseBody(candidate, manifest = null) {
   return `<!-- ${RELEASE_MARKER}:${JSON.stringify({ ...identity(candidate), ...(manifest ? { sha256: manifest.sha256, payloadHash: manifest.payloadHash } : {}) })} -->\n\n` +
     `${candidate.releaseNotes}\n\n` +
-    `Jest compatibility repair from #${candidate.prNumber}.\n\n` +
+    `${candidate.releaseKind === 'manual' ? 'Release' : 'Jest compatibility repair'} from #${candidate.prNumber}.\n\n` +
     `Built from commit \`${candidate.mergeSha}\` after [CI passed](${candidate.ciUrl}).\n\n` +
     `Install the attached \`${candidate.artifactName}\` or update **HyperJest** from the VS Code Marketplace.`;
 }
 
 export async function reserveRelease(api, candidate, directory) {
   // Re-read mutable eligibility before reserving or resuming an immutable artifact.
-  const fresh = await eligibleCandidate(api, await api.pull(candidate.prNumber));
+  const pr = await api.pull(candidate.prNumber);
+  const fresh = candidate.releaseKind === 'manual' ? await manualCandidate(api, pr) : await eligibleCandidate(api, pr);
   assertIdentity(fresh, candidate, 'Current PR eligibility');
   if (!(await api.successfulCi(candidate.mergeSha)) || !(await api.isOnMaster(candidate.mergeSha))) {
     throw new Error('Release source no longer has the required successful master CI or ancestry.');
@@ -310,6 +345,12 @@ export class GitHubApi {
   }
   closedPulls() { return this.pages('pulls?state=closed&sort=updated&direction=desc'); }
   pull(number) { return this.request(`pulls/${number}`); }
+  async firstParent(sha) {
+    const commit = await this.request(`git/commits/${sha}`);
+    const parent = commit.parents?.[0]?.sha;
+    if (!SHA.test(parent)) throw new Error('Release source must have a merge parent.');
+    return parent;
+  }
   comments(number) { return this.pages(`issues/${number}/comments`); }
   async manifest(ref) {
     const file = await this.request(`contents/package.json?ref=${encodeURIComponent(ref)}`);
@@ -380,8 +421,13 @@ async function main() {
   const api = new GitHubApi(process.env.GITHUB_REPOSITORY, process.env.GH_TOKEN);
   if (command === 'plan') {
     const input = process.env.REQUESTED_PR;
+    const manualInput = process.env.REQUESTED_RELEASE_PR;
     if (input && !/^[1-9]\d*$/.test(input)) throw new Error('pr_number must be a positive integer.');
-    const result = await planRelease(api, input ? Number(input) : null);
+    if (manualInput && !/^[1-9]\d*$/.test(manualInput)) throw new Error('release_pr must be a positive integer.');
+    if (manualInput && (input || process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_REF !== 'refs/heads/master')) {
+      throw new Error('release_pr requires an explicit workflow_dispatch on master without pr_number.');
+    }
+    const result = manualInput ? await planManualRelease(api, Number(manualInput)) : await planRelease(api, input ? Number(input) : null);
     await appendOutput('ready', Boolean(result.candidate));
     if (!result.candidate) return summary(result.reason);
     const candidate = result.candidate;
@@ -403,6 +449,9 @@ async function main() {
   if (command === 'report') {
     const runUrl = `https://github.com/${api.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
     const success = process.env.RELEASE_RESULT === 'success';
+    if (candidate.releaseKind === 'manual') return summary(success
+      ? `Released ${candidate.tag}. [Workflow](${runUrl}).`
+      : `Manual release of ${candidate.tag} did not complete. Retry release_pr=${candidate.prNumber} after resolving the failure; the reserved VSIX is retained. [Workflow](${runUrl}).`);
     try {
       await api.report(candidate.prNumber, success
         ? `Released **${candidate.tag}** to [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=${EXTENSION_ID}) and [GitHub Releases](https://github.com/${api.repo}/releases/tag/${candidate.tag}). [Workflow](${runUrl}).`

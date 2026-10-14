@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   compareVersions, eligibleCandidate, GitHubApi, inspectVsix, parseMarker,
-  planRelease, publishRelease, releaseNotes, reserveRelease, stageArtifact,
+  manualCandidate, planManualRelease, planRelease, publishRelease, releaseNotes, reserveRelease, stageArtifact,
 } from './release.mjs';
 import { Marketplace } from './release-marketplace.mjs';
 
@@ -109,6 +109,96 @@ test('a ready label cannot release a non-Jest change or a mismatched manifest', 
   await assert.rejects(eligibleCandidate(api, pr), /does not increase/);
   api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: '0.1.2', devDependencies: { jest: sha === baseSha ? '29.7.0' : '30.4.0' } });
   await assert.rejects(eligibleCandidate(api, pr), /identity differs/);
+});
+
+function manualApi(api = fakeApi()) {
+  api.pull = async () => ({ ...structuredClone(pr), user: { login: 'guyca' }, labels: [] });
+  api.firstParent = async () => baseSha;
+  api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : '0.1.1' });
+  return api;
+}
+
+test('manual release accepts an explicitly selected merged version bump without repair metadata', async () => {
+  const api = manualApi();
+  const { candidate: selected } = await planManualRelease(api, pr.number);
+  assert.equal(selected.releaseKind, 'manual');
+  assert.equal(selected.mergeSha, mergeSha);
+  assert.equal(selected.ciRunId, 123);
+  assert.equal((await planRelease(api)).candidate, null);
+});
+
+test('manual release rejects unmerged, foreign, wrong-base and unchanged-version PRs', async () => {
+  const api = manualApi();
+  const source = await api.pull();
+  for (const patch of [
+    { merged_at: null }, { base: { ref: 'other' } },
+    { head: { ...source.head, repo: { full_name: 'other/repo' } } },
+  ]) await assert.rejects(manualCandidate(api, { ...source, ...patch }), /merged PR/);
+  api.manifest = async () => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: '0.1.1' });
+  await assert.rejects(planManualRelease(api, pr.number), /must increase/);
+});
+
+test('manual release requires successful exact-source master CI, ancestry and changelog', async () => {
+  const api = manualApi();
+  api.successfulCi = async () => null;
+  await assert.rejects(planManualRelease(api, pr.number), /successful push CI/);
+  api.successfulCi = async () => ({ id: 123, html_url: candidate.ciUrl });
+  api.isOnMaster = async () => false;
+  await assert.rejects(planManualRelease(api, pr.number), /master ancestry/);
+  api.isOnMaster = async () => true;
+  api.changelog = async () => '## Unreleased\n- Future work';
+  await assert.rejects(planManualRelease(api, pr.number), /no release notes/);
+});
+
+test('manual release retains its original VSIX across authentication failure and retry', async t => {
+  const { api: originalApi, output, directory, source, manifest } = await fixture(t);
+  const api = manualApi(originalApi);
+  const selected = (await planManualRelease(api, pr.number)).candidate;
+  await stageArtifact(api, selected, output, source);
+  await reserveRelease(api, selected, output);
+  assert.match((await api.release(selected.tag)).body, /Release from #30/);
+  await rm(source);
+  const retry = (await planManualRelease(api, pr.number)).candidate;
+  const restored = path.join(directory, 'manual-retry');
+  await stageArtifact(api, retry, restored, '/missing-build');
+  let publishes = 0;
+  await publishRelease(api, {
+    version: async () => null, latestVersion: async () => null,
+    publish: async () => { publishes++; },
+    verify: async (_, actual) => assert.equal(actual.sha256, manifest.sha256),
+  }, retry, restored);
+  assert.equal(publishes, 1);
+  assert.equal((await api.release(selected.tag)).draft, false);
+  assert.equal((await planManualRelease(api, pr.number)).candidate, null);
+});
+
+test('manual reservation cannot be resumed through automatic repair eligibility', async t => {
+  const { api: originalApi, output, source } = await fixture(t);
+  const api = manualApi(originalApi);
+  const selected = (await planManualRelease(api, pr.number)).candidate;
+  await stageArtifact(api, selected, output, source);
+  await reserveRelease(api, selected, output);
+  await assert.rejects(reserveRelease(api, candidate, output), /conflicts/);
+});
+
+test('manual CLI selection requires an explicit dispatch on master and rejects mixed inputs', () => {
+  for (const environment of [
+    { GITHUB_EVENT_NAME: 'workflow_run', GITHUB_REF: 'refs/heads/master' },
+    { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/other' },
+    { GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/master', REQUESTED_PR: '30' },
+  ]) {
+    assert.throws(() => execFileSync(process.execPath, ['.github/scripts/jest-automation/release.mjs', 'plan', '/unused'], {
+      env: { ...process.env, GH_TOKEN: 'test-token', GITHUB_REPOSITORY: 'guyca/hyper-jest', REQUESTED_PR: '', REQUESTED_RELEASE_PR: '30', ...environment },
+      stdio: 'pipe',
+    }), error => /explicit workflow_dispatch on master without pr_number/.test(error.stdout.toString()));
+  }
+});
+
+test('GitHub adapter selects the merge parent and rejects a parentless source', async () => {
+  const api = new GitHubApi('guyca/hyper-jest', 'test-token', async () => Response.json({ parents: [{ sha: baseSha }, { sha: headSha }] }));
+  assert.equal(await api.firstParent(mergeSha), baseSha);
+  api.fetcher = async () => Response.json({ parents: [] });
+  await assert.rejects(api.firstParent(mergeSha), /merge parent/);
 });
 
 test('queue orders all merged repairs and waits for exact-source CI', async () => {

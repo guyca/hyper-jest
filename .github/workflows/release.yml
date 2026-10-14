@@ -1,4 +1,4 @@
-name: Release repaired Jest updates
+name: Release HyperJest
 
 on:
   workflow_run:
@@ -9,6 +9,10 @@ on:
     inputs:
       pr_number:
         description: Optional merged Jest repair PR to retry (older queued releases run first)
+        required: false
+        type: string
+      release_pr:
+        description: Merged version-bump PR to release manually (requires successful master CI)
         required: false
         type: string
 
@@ -54,11 +58,12 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Select oldest eligible merged repair
+      - name: Select requested release or oldest eligible merged repair
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_PR: ${{ inputs.pr_number }}
+          REQUESTED_RELEASE_PR: ${{ inputs.release_pr }}
         run: node controller/.github/scripts/jest-automation/release.mjs plan "$RUNNER_TEMP/release-candidate.json"
       - uses: actions/upload-artifact@v7
         if: steps.plan.outputs.ready == 'true'
