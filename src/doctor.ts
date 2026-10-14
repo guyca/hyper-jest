@@ -4,6 +4,7 @@ import type { ProjectRegistry } from './discovery/projectRegistry';
 import type { WorkerPool } from './workerPool';
 import type { HyperJestSettings } from './core/settingsModel';
 import type { DoctorPackage, DoctorReport } from './doctorView';
+import { TESTED_JEST_DESCRIPTION } from './core/jestCompatibility';
 
 /** Builds the Doctor report from discovery results, worker state and settings. */
 export function buildDoctorReport(registry: ProjectRegistry, pool: WorkerPool, settings: HyperJestSettings, extensionVersion: string, extra?: DoctorReport['extraSections']): DoctorReport {
@@ -21,7 +22,7 @@ export function buildDoctorReport(registry: ProjectRegistry, pool: WorkerPool, s
     }
     const fixes: string[] = [];
     if (spec.status === 'unavailable') fixes.push(`Run \`yarn install\` (or npm install) in ${spec.repoRoot} so that \`jest\` resolves from ${spec.packageDir}.`);
-    if (spec.status === 'unsupported') fixes.push('HyperJest supports Jest 29 and 30 with jest-runner / jest-runner-groups.');
+    if (spec.status === 'unsupported') fixes.push(`HyperJest tests compatibility with Jest ${TESTED_JEST_DESCRIPTION} with jest-runner / jest-runner-groups.`);
     if (e.readiness.kind === 'error') fixes.push('Run the equivalent command shown by "HyperJest: Show Resolved Jest Config" in a terminal to see the full error, then "HyperJest: Restart".');
     for (const w of spec.warnings) if (/node/i.test(w)) fixes.push('Set `hyperjest.nodePath` or install the requested Node version with fnm/nvm.');
     packages.push({

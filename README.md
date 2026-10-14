@@ -1,6 +1,6 @@
 # HyperJest
 
-![Test line coverage](https://raw.githubusercontent.com/guyca/hyper-jest/coverage-badge/coverage.svg)
+![Test line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fguyca%2Fhyper-jest%2Fcoverage-badge%2Fcoverage.json)
 
 HyperJest is a VS Code extension that runs your project's own Jest and shows test feedback as you code.
 
@@ -30,5 +30,11 @@ yarn install-extension
 The last command builds HyperJest and installs the VSIX. In VS Code, run **Developer: Reload Window**. Open a project with Jest installed in its package; HyperJest discovers its Jest configuration and starts eligible tests automatically. Use **HyperJest: Select Configurations** if you have multiple packages or configurations.
 
 For configuration options, see [Configuration](docs/configuration.md). For build and troubleshooting commands, see the [maintainer guide](CLAUDE.md).
+
+## Jest compatibility
+
+HyperJest guarantees the latest three stable Jest majors, currently **28, 29, and 30**. CI exercises pinned versions of each major and every proposed Jest dependency update through both the warm worker and CLI engines. Older versions may continue to work but are outside the tested guarantee. Prereleases are not included.
+
+The versions used by CI are recorded in [the compatibility policy](scripts/jest-compatibility.json). For the automatic Dependabot repair and release process, see [release automation](docs/release-automation.md).
 
 HyperJest is released under the [MIT license](LICENSE.md).

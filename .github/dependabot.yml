@@ -8,7 +8,7 @@ updates:
       day: monday
       time: "09:00"
       timezone: Asia/Jerusalem
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 3
     versioning-strategy: increase
     exclude-paths:
       - "tests/fixtures/**"
@@ -19,15 +19,23 @@ updates:
           - version-update:semver-minor
           - version-update:semver-major
     groups:
+      jest:
+        patterns: ["jest", "@jest/*", "jest-*", "@types/jest", "babel-jest", "ts-jest"]
+      jest-security:
+        applies-to: security-updates
+        patterns: ["jest", "@jest/*", "jest-*", "@types/jest", "babel-jest", "ts-jest"]
       dependencies-minor-and-patch:
         patterns: ["*"]
+        exclude-patterns: ["jest", "@jest/*", "jest-*", "@types/jest", "babel-jest", "ts-jest"]
         update-types: [minor, patch]
       dependencies-major:
         patterns: ["*"]
+        exclude-patterns: ["jest", "@jest/*", "jest-*", "@types/jest", "babel-jest", "ts-jest"]
         update-types: [major]
       dependencies-security:
         applies-to: security-updates
         patterns: ["*"]
+        exclude-patterns: ["jest", "@jest/*", "jest-*", "@types/jest", "babel-jest", "ts-jest"]
 
   - package-ecosystem: github-actions
     directory: /

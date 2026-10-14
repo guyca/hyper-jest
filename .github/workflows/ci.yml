@@ -10,48 +10,112 @@ on:
 permissions:
   contents: read
 
+# Every merged commit needs its own completed CI run for the release queue.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HUSKY: '0'
+  YARN_NPM_REGISTRY_SERVER: https://registry.npmjs.org
 
 jobs:
-  checks:
-    name: PR checks
+  matrix:
+    name: Compatibility policy
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    outputs:
+      targets: ${{ steps.targets.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Check lockfile registry URLs
-        run: |
-          if grep -q '__archiveUrl=' yarn.lock; then
-            echo "::error file=yarn.lock::yarn.lock pins registry tarball URLs. Run 'sh scripts/sanitize-lockfile.sh' and commit yarn.lock."
-            exit 1
-          fi
-
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           package-manager-cache: false
+      - id: targets
+        run: |
+          matrix=$(node scripts/test-compatibility.mjs --matrix)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
+  build:
+    name: Build, unit tests and VSIX
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check lockfile registry URLs
+        run: |
+          if grep -q '__archiveUrl=' yarn.lock; then
+            echo "::error file=yarn.lock::Run yarn sanitize:lockfile and commit yarn.lock."
+            exit 1
+          fi
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Enable pinned Yarn
         run: |
           corepack enable
           corepack install
+      - run: yarn install --immutable
+      - run: yarn build
+      - run: yarn test --ci --runInBand --coverage
+      - run: yarn test:automation
+      - run: yarn check:no-network
+      - run: yarn package
+      - run: yarn check:package
+      - name: Type-check Cursor integration
+        working-directory: .github/scripts/code-review
+        run: |
+          npm ci --ignore-scripts
+          npm run type-check
 
-      - name: Install dependencies
+  compatibility:
+    name: Jest ${{ matrix.version }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Enable pinned Yarn
+        run: |
+          corepack enable
+          corepack install
+      - run: yarn install --immutable
+      - run: yarn build
+      - name: Warm worker and CLI compatibility
         env:
-          HUSKY: '0'
-        run: yarn install --immutable
+          JEST_VERSION: ${{ matrix.version }}
+        run: yarn test:compatibility --version "$JEST_VERSION"
 
-      - name: Type-check and build
-        run: yarn build
-
-      - name: Unit tests with coverage
-        run: yarn test --ci --runInBand --coverage
-
-      - name: Integration tests
-        run: yarn test:integration --ci --runInBand
-
-      - name: Check built extension for network APIs
-        run: yarn check:no-network
+  checks:
+    name: PR checks
+    if: always()
+    needs: [matrix, build, compatibility]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every validation job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node --input-type=module -e '
+            const jobs = JSON.parse(process.env.RESULTS);
+            for (const [name, job] of Object.entries(jobs)) {
+              if (job.result !== "success") {
+                console.error(`${name}: ${job.result}`);
+                process.exitCode = 1;
+              }
+            }
+          '

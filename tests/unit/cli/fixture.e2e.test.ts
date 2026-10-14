@@ -1,25 +1,22 @@
 /**
- * End-to-end check of the built bundles against the repo's own Jest 29.7 and the sample fixture.
+ * End-to-end check of the built bundles against the selected Jest runtime and sample fixture.
  * Gated: HYPERJEST_IT=1 and `node esbuild.mjs` must have produced dist/worker/*.cjs.
  */
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+import { copyRuntimeFixture, jestPackageDir, jestVersion } from '../../helpers/jestRuntime';
 import { parseCliEvents, type CliEvent, type CliFileCoverageEvent, type CliFileResultEvent, type CliRunCompleteEvent, type CliTestResultEvent } from '../../../src/core/cliEvents';
 import { buildRunSpec } from '../../../src/core/runSpec';
 
 const ROOT = path.resolve(__dirname, '../../..');
 const ASSETS = path.join(ROOT, 'dist/worker');
 const FIXTURE = path.join(ROOT, 'tests/fixtures/sample-project');
-const JEST_PKG = path.join(ROOT, 'node_modules/jest');
+const JEST_PKG = jestPackageDir;
 const enabled = process.env.HYPERJEST_IT === '1' && fs.existsSync(path.join(ASSETS, 'reporter.cjs')) && fs.existsSync(path.join(ASSETS, 'overlayPreload.cjs'));
 
 function copyFixture(name: string): string {
-  // realpath: macOS tmp dirs are symlinks (/var -> /private/var) and Jest only runs files under the realpath rootDir.
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `hyperjest-${name}-`)));
-  fs.cpSync(FIXTURE, dir, { recursive: true });
-  return dir;
+  return copyRuntimeFixture(FIXTURE, name);
 }
 
 function runSpec(spec: { command: string; args: string[]; cwd: string; env: Record<string, string> }): Promise<{ code: number | null; events: CliEvent[]; stderr: string }> {
@@ -34,7 +31,7 @@ function runSpec(spec: { command: string; args: string[]; cwd: string; env: Reco
   });
 }
 
-(enabled ? describe : describe.skip)('CLI reporter + overlay end-to-end (jest 29.7, sample fixture)', () => {
+(enabled ? describe : describe.skip)(`CLI reporter + overlay end-to-end (Jest ${jestVersion}, sample fixture)`, () => {
   const dirs: string[] = [];
   afterAll(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
 

@@ -58,8 +58,10 @@ describe('jestResolver', () => {
   it('parses versions and declared ranges', () => {
     expect(jestMajor('29.7.0')).toBe(29);
     expect(jestMajor('^30.4.2')).toBe(30);
-    expect(isSupportedJestVersion('28.1.0')).toBe(false);
+    expect(isSupportedJestVersion('27.5.1')).toBe(false);
+    expect(isSupportedJestVersion('28.1.3')).toBe(true);
     expect(isSupportedJestVersion('29.0.0')).toBe(true);
+    expect(isSupportedJestVersion('30.5.2')).toBe(true);
     expect(declaredMajor('^27.4.7')).toBe(27);
     expect(declaredMajor('>=29 <31')).toBe(29);
     expect(declaredMajor('*')).toBeUndefined();

@@ -39,7 +39,7 @@ yarn build                  # type-check (host, worker and test tsconfigs) + pro
 yarn build:dev              # fast dev bundles with source maps
 yarn watch                  # rebuild on change (used by .vscode/launch.json "Run HyperJest (dev host)")
 yarn test                   # HyperJest's own unit tests (jest 29.7 + ts-jest, ~420 tests, no vscode)
-yarn test:integration       # gated integration tests: real jest 29.7 driven through the worker/reporter
+yarn test:integration       # gated integration tests: real project Jest driven through the worker/reporter
 yarn package                # build + vsce package -> hyperjest.vsix
 yarn install-extension      # package + code --install-extension hyperjest.vsix --force
 ```
@@ -93,6 +93,10 @@ verifying an immutable install. CI rejects lockfiles containing registry-specifi
 If editing dependency entries by hand, run `yarn install` to update the lockfile before verifying
 with `yarn install --immutable`. For `@types/vscode`, bump `engines.vscode` to the same major.minor.
 Worker bundles must stay Jest-free: check with `grep -c "node_modules/jest" dist/worker/*.cjs` (expect 0).
+
+## Jest compatibility and release automation
+
+Run `yarn build && yarn test:compatibility` to test the three supported Jest majors in isolated installations. The policy is in `scripts/jest-compatibility.json`; commit each version’s fixture manifest and public-registry npm lock. CI also exercises the proposed root Jest version. Run `yarn test:automation` for repair, release, packaging, and compatibility-policy checks. See [release automation](docs/release-automation.md) for the repair limits, authentication setup, versioning, and recovery commands.
 
 ## Cursor code review
 
@@ -151,7 +155,7 @@ Actions bot to push the badge update to `master`.
   ```
 - **Nothing runs for a package** → Doctor: `unavailable` means `jest` does not resolve from the package (run the
   repo's `yarn install`); `notJest` means the test script is not Jest (node --test, mocha); `unsupported`
-  means Jest < 29. Force a spec with `hyperjest.projects: [{ "packageDir": "...", "configArg": "..." }]`.
+  means Jest is older than the earliest guaranteed major (see scripts/jest-compatibility.json). Force a spec with `hyperjest.projects: [{ "packageDir": "...", "configArg": "..." }]`.
 - **Wrong tests / wrong config picked** → the registry prefers configs named by `package.json` test scripts
   (`jest -c x`) over implicit `jest.config.*`; `hyperjest.discovery.preferScriptConfigs: false`
   flips that. Custom tooling supplies its setup through `hyperjest.config.js` or workspace settings;
