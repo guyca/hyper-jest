@@ -44,7 +44,16 @@ function fakeApi() {
     release: async () => release, tagTarget: async () => tag,
     createTag: async (name, sha) => { calls.push('createTag'); tag = sha; },
     createRelease: async data => { calls.push('createRelease'); release = { ...data, id: 1, assets: [], html_url: 'https://example.test/release' }; return release; },
-    updateRelease: async (id, data) => { calls.push(data.draft === false ? 'finalize' : 'updateRelease'); Object.assign(release, data); return release; },
+    updateRelease: async (id, data) => {
+      let expectedTag = release.tag_name;
+      if (release.draft && release.tag_name?.startsWith('untagged-')) {
+        const record = parseMarker(release.body, 'hyperjest-release');
+        assert.match(record?.version ?? '', /^\d+\.\d+\.\d+$/, 'An untagged reservation must record its release version');
+        expectedTag = `v${record.version}`;
+      }
+      assert.equal(data.tag_name, expectedTag, 'Every release update must preserve its version tag');
+      calls.push(data.draft === false ? 'finalize' : 'updateRelease'); Object.assign(release, data); return release;
+    },
     uploadAsset: async (id, name, bytes) => {
       calls.push(`upload:${name}`); const asset = { id: nextAsset++, name, state: 'uploaded' };
       assets.set(asset.id, bytes); release.assets.push(asset); return asset;
@@ -205,6 +214,65 @@ test('reservation before authentication retains bytes without publishing and a l
   assert.equal((await api.release(candidate.tag)).draft, false);
 });
 
+test('untagged draft recovery reuses the original release and VSIX through finalization', async t => {
+  const { api, output, directory, source, manifest } = await fixture(t);
+  const original = await readFile(source);
+  const { release: reservation } = await reserveRelease(api, candidate, output);
+  const originalAssetIds = reservation.assets.map(asset => asset.id);
+  reservation.tag_name = 'untagged-original';
+  await rm(source);
+  await rm(output, { recursive: true });
+
+  // Exercise the real adapter's untagged-draft lookup during planning and
+  // reservation, with all writes still handled by the in-memory GitHub API.
+  const storedRelease = api.release;
+  const lookup = new GitHubApi(api.repo, 'test-token', async url => {
+    const release = await storedRelease();
+    if (String(url).includes('/releases/tags/')) return release.draft
+      ? new Response('', { status: 404 }) : Response.json(release);
+    return Response.json([release]);
+  });
+  api.release = tag => lookup.release(tag);
+  const planned = (await planRelease(api)).candidate;
+  assert.equal(planned.existingAssetId, reservation.assets.find(asset => asset.name === candidate.artifactName).id);
+  const restored = path.join(directory, 'restored-untagged');
+  await stageArtifact(api, planned, restored, '/nonexistent-build.vsix');
+  let publishCalls = 0;
+  await publishRelease(api, {
+    version: async () => null, latestVersion: async () => null,
+    publish: async filename => {
+      publishCalls++;
+      assert.deepEqual(await readFile(filename), original);
+      const draft = await api.release(candidate.tag);
+      assert.equal(draft.id, reservation.id);
+      assert.equal(draft.tag_name, candidate.tag);
+      assert.equal(draft.draft, true);
+    },
+    verify: async (_, actual) => assert.equal(actual.sha256, manifest.sha256),
+  }, planned, restored);
+  const published = await api.release(candidate.tag);
+  assert.equal(published.id, reservation.id);
+  assert.equal(published.tag_name, candidate.tag);
+  assert.equal(published.draft, false);
+  assert.deepEqual(published.assets.map(asset => asset.id), originalAssetIds);
+  assert.equal(await api.tagTarget(candidate.tag), candidate.mergeSha);
+  assert.equal(publishCalls, 1);
+  assert.equal(api.calls.filter(call => call === 'createRelease').length, 1);
+  assert.equal(api.calls.filter(call => call === `upload:${candidate.artifactName}`).length, 1);
+});
+
+test('release test API rejects omitted or conflicting version tags during recovery and after assignment', async t => {
+  const { api, output } = await fixture(t);
+  const { release } = await reserveRelease(api, candidate, output);
+  for (const currentTag of ['untagged-original', candidate.tag]) {
+    release.tag_name = currentTag;
+    for (const data of [{ body: 'Omitted tag' }, { tag_name: 'v9.9.9' }]) {
+      await assert.rejects(api.updateRelease(release.id, data), /preserve its version tag/);
+      assert.equal(release.tag_name, currentTag);
+    }
+  }
+});
+
 test('retry after Marketplace success reuses draft bytes and never publishes twice', async t => {
   const { api, output, directory, manifest } = await fixture(t);
   let publishCalls = 0;
@@ -346,11 +414,77 @@ test('installed pinned VSCE executable actually runs its CLI', async t => {
   assert.equal(version, pkg.version);
 });
 
-test('Marketplace validation timeout never finalizes a release', async () => {
+test('slow Marketplace queries consume the deadline and leave the original release draft for retry', async t => {
+  const { api, output, directory } = await fixture(t);
+  let elapsed = 0;
+  let queries = 0;
+  const marketplace = new Marketplace({ directory, now: () => elapsed,
+    wait: async milliseconds => { elapsed += milliseconds; },
+    fetcher: async () => { queries++; elapsed += 10_000; return Response.json({ results: [] }); },
+  });
+  marketplace.version = async () => ({ version: candidate.version });
+  marketplace.latestVersion = async () => candidate.version;
+  await assert.rejects(publishRelease(api, marketplace, candidate, output), /verification.*eight minutes/);
+  assert.equal(elapsed, 8 * 60_000);
+  assert.equal(queries, 24);
+  assert.equal((await api.release(candidate.tag)).draft, true);
+  assert.equal(api.calls.includes('finalize'), false);
+  assert.ok((await planRelease(api)).candidate.existingAssetId);
+});
+
+test('Marketplace polling sleeps only until the remaining deadline', async () => {
+  let elapsed = 0;
+  const waits = [];
+  const marketplace = new Marketplace({ directory: '/unused', now: () => elapsed,
+    wait: async milliseconds => { waits.push(milliseconds); elapsed += milliseconds; },
+    fetcher: async () => { elapsed = 475_000; return Response.json({ results: [] }); },
+  });
+  await assert.rejects(marketplace.verify(candidate, {}), /verification.*eight minutes/);
+  assert.equal(elapsed, 480_000);
+  assert.deepEqual(waits, [5000]);
+});
+
+test('Marketplace downloads share the polling deadline and cannot succeed after expiry', async t => {
+  let elapsed = 0;
+  const timeouts = [];
+  let downloads = 0;
+  t.mock.method(AbortSignal, 'timeout', milliseconds => {
+    timeouts.push(milliseconds);
+    return new AbortController().signal;
+  });
+  const marketplace = new Marketplace({ directory: '/unused', now: () => elapsed,
+    wait: async () => assert.fail('Expired downloads must not retry'),
+    fetcher: async url => {
+      if (String(url).includes('extensionquery')) {
+        elapsed = 450_000;
+        return Response.json({ results: [{ extensions: [{ publisher: { publisherName: 'GuyCarmeli' }, extensionName: 'hyperjest',
+          versions: [{ version: candidate.version, assetUri: 'https://guyc.gallery.vsassets.io/package' }],
+        }] }] });
+      }
+      downloads++;
+      return { status: 200, ok: true, arrayBuffer: async () => { elapsed += 30_000; return new ArrayBuffer(0); } };
+    },
+  });
+  await assert.rejects(marketplace.verify(candidate, {}), /verification.*eight minutes/);
+  assert.equal(elapsed, 480_000);
+  assert.equal(downloads, 1);
+  assert.deepEqual(timeouts, [60_000, 30_000]);
+});
+
+test('Marketplace validation can complete after the original three-minute window', async t => {
+  const { source, directory, manifest } = await fixture(t);
+  const bytes = await readFile(source);
   let waits = 0;
-  const marketplace = new Marketplace({ directory: '/unused', wait: async () => { waits++; }, fetcher: async () => new Response(JSON.stringify({ results: [] })) });
-  await assert.rejects(marketplace.verify(candidate, { payloadHash: 'unused' }), /not finished validating/);
-  assert.equal(waits, 17);
+  let elapsed = 0;
+  const marketplace = new Marketplace({ directory, now: () => elapsed, wait: async milliseconds => { waits++; elapsed += milliseconds; }, fetcher: async url => {
+    if (!String(url).includes('extensionquery')) return new Response(bytes);
+    return Response.json({ results: [{ extensions: [{ publisher: { publisherName: 'GuyCarmeli' }, extensionName: 'hyperjest',
+      versions: waits < 24 ? [] : [{ version: candidate.version, assetUri: 'https://guyc.gallery.vsassets.io/package' }],
+    }] }] });
+  } });
+  await marketplace.verify(candidate, manifest);
+  assert.equal(waits, 24);
+  assert.equal(elapsed, 240_000);
 });
 
 test('GitHub adapter accepts only successful native CI on the exact master commit', async () => {
@@ -367,6 +501,30 @@ test('GitHub release lookup recovers a draft omitted by the published tag endpoi
   const api = new GitHubApi('guyca/hyper-jest', 'test-token', async url => String(url).includes('/releases/tags/')
     ? new Response('', { status: 404 }) : new Response(JSON.stringify([draft])));
   assert.deepEqual(await api.release('v0.1.1'), draft);
+});
+
+test('GitHub release lookup recovers the oldest untagged reservation by release identity', async () => {
+  const draft = { id: 10, tag_name: 'untagged-original', draft: true, body: `<!-- hyperjest-release:${JSON.stringify(candidate)} -->` };
+  const newer = { ...draft, id: 20, tag_name: 'untagged-duplicate' };
+  const unrelated = { ...draft, id: 1, body: `<!-- hyperjest-release:${JSON.stringify({ ...candidate, extensionId: 'other.extension' })} -->` };
+  const api = new GitHubApi('guyca/hyper-jest', 'test-token', async url => String(url).includes('/releases/tags/')
+    ? new Response('', { status: 404 }) : Response.json([newer, unrelated, draft]));
+  assert.deepEqual(await api.release(candidate.tag), draft);
+  assert.equal(await api.release('v0.2.0'), null);
+});
+
+test('Marketplace version queries retry transient failures and keep validation flags', async () => {
+  let calls = 0;
+  const marketplace = new Marketplace({ directory: '/unused', wait: async () => {}, fetcher: async (url, options) => {
+    calls++;
+    assert.equal(options.method, 'POST');
+    assert.ok(JSON.parse(options.body).flags & 32);
+    if (calls === 1) throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+    if (calls === 2) return new Response('', { status: 503 });
+    return Response.json({ results: [] });
+  } });
+  assert.deepEqual(await marketplace.versions(true), []);
+  assert.equal(calls, 3);
 });
 
 test('VSIX identity and unpacked contents are checked without running extension code', async t => {

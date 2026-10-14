@@ -190,7 +190,17 @@ cannot authorize a rebuild. Tags,
 versions, source metadata, and artifact hashes must agree. An existing Marketplace
 version is checked against the retained package before it is accepted as a
 successful retry. Conflicting artifacts stop the workflow instead of being
-overwritten. Failed runs report the failure on the PR; review the Actions logs,
+overwritten. Read requests retry transient network and service errors up to three
+times; failures identify the operation and error code without printing credentials
+or signed download URLs. Publishing and other write requests are not automatically
+repeated. Marketplace verification has an eight-minute elapsed-time deadline,
+including requests, retries, downloads, and polling sleeps, before leaving the
+draft for a later retry. The publish job allows 25 minutes for setup, publication,
+verification, and finalization. Draft updates preserve the version tag; recovery also
+recognizes older `untagged-*` drafts by their release metadata and reuses the oldest
+reservation after validating its source and checksums.
+
+Failed runs report the failure on the PR; review the Actions logs,
 fix the underlying setup or service problem, then retry:
 
 ```sh
