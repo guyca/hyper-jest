@@ -1,0 +1,8 @@
+{
+  "name": "hyperjest-jest-30.5.2",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "jest": "30.5.2"
+  }
+}

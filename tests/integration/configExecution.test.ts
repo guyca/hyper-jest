@@ -1,8 +1,8 @@
 /** Real warm/CLI execution of a multi-config package; uses only local fixture tests. */
 import { fork, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+import { copyRuntimeFixture, jestPackageDir, jestVersion } from '../helpers/jestRuntime';
 import { runCli } from '../../src/cliEngine';
 import { prepareHyperConfig } from '../../src/discovery/hyperConfigLoader';
 import { ResultStore } from '../../src/results/resultStore';
@@ -50,14 +50,12 @@ async function execute(engine: 'warm' | 'cli', spec: ProjectSpec, files: string[
 suite.each(['warm', 'cli'] as const)('%s configuration execution', engine => {
   let dir: string;
   beforeEach(() => {
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hyperjest-execution-')));
-    fs.cpSync(fixture, dir, { recursive: true });
-    fs.symlinkSync(path.join(repo, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+    dir = copyRuntimeFixture(fixture, 'execution');
   });
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
   const spec = (id: string): ProjectSpec => ({
     id, displayName: id, packageDir: dir, repoRoot: dir, flavor: 'hyperjest', status: 'ok', selected: true,
-    configArg: path.join(dir, 'jest.config.js'), jestPkgDir: path.join(repo, 'node_modules/jest'), jestBinPath: path.join(repo, 'node_modules/jest/bin/jest.js'), jestVersion: '29.7.0',
+    configArg: path.join(dir, 'jest.config.js'), jestPkgDir: jestPackageDir, jestBinPath: path.join(jestPackageDir, 'bin/jest.js'), jestVersion,
     ...runtime, cliFilters: { testPathIgnorePatterns: [] }, e2ePatterns: [], warnings: [],
   });
   it('runs only imported unit scope and enables integration when selected explicitly', async () => {

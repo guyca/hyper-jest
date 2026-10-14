@@ -17,6 +17,7 @@ import { resetSourceCapture } from './sourceCapture';
  */
 import * as path from 'path';
 import { scopeMatches } from '../core/hyperConfig';
+import { MIN_SUPPORTED_JEST_MAJOR } from '../core/jestCompatibility';
 import type { Logger } from '../core/logger';
 import {
   makeTestKey,
@@ -280,8 +281,8 @@ export class WarmEngine {
       return false;
     }
     const chain = this.chain;
-    if (majorOf(chain.version) < 29) {
-      this.sendInitError('unknown', `Jest ${chain.version} is not supported (HyperJest needs 29 or newer)`);
+    if (majorOf(chain.version) < MIN_SUPPORTED_JEST_MAJOR) {
+      this.sendInitError('unknown', `Jest ${chain.version} is not supported (HyperJest needs ${MIN_SUPPORTED_JEST_MAJOR} or newer)`);
       return false;
     }
     this.log.info(`jest ${chain.version} at ${chain.dirs.jest}; jest-config ${chain.dirs.config}; jest-runner ${chain.dirs.runner}`);

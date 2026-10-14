@@ -1,0 +1,50 @@
+name: Inspect Marketplace publishing identity
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  identity:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: marketplace
+    permissions:
+      id-token: write
+    steps:
+      - name: Check identity configuration
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_TENANT_ID" ]; then
+            echo '::error::Configure AZURE_CLIENT_ID and AZURE_TENANT_ID in the marketplace environment first.'
+            exit 1
+          fi
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Identify the service principal for publisher membership
+        env:
+          AZURE_CORE_OUTPUT: none
+        run: |
+          profile_id="$(az rest --method get \
+            --url https://app.vssps.visualstudio.com/_apis/profile/profiles/me \
+            --resource 499b84ac-1321-427f-aa17-267ca6975798 \
+            --query id --output tsv)"
+          if ! [[ "$profile_id" =~ ^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$ ]]; then
+            echo '::error::Azure DevOps did not return a valid identity profile ID.'
+            exit 1
+          fi
+          echo "Marketplace identity profile ID: $profile_id"
+          {
+            echo 'Add this Azure DevOps identity as a **Contributor** to publisher **GuyCarmeli**:'
+            echo
+            echo "\`$profile_id\`"
+            echo
+            echo 'OIDC authentication succeeded. This workflow does not publish an extension or verify publisher membership.'
+          } >> "$GITHUB_STEP_SUMMARY"

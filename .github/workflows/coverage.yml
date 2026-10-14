@@ -67,7 +67,8 @@ jobs:
             git -C "$badge_dir" switch --orphan coverage-badge
           fi
           cp .github/media/coverage.svg "$badge_dir/coverage.svg"
-          git -C "$badge_dir" add coverage.svg
+          cp .github/media/coverage.json "$badge_dir/coverage.json"
+          git -C "$badge_dir" add coverage.svg coverage.json
           if git -C "$badge_dir" diff --cached --quiet; then
             echo "Coverage badge is unchanged."
             exit 0

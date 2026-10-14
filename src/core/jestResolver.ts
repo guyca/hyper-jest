@@ -11,6 +11,8 @@
 import { createRequire } from 'module';
 import * as path from 'path';
 import { FsView, PackageJsonLike, ancestors, nodeFs, normalizePath, readJson } from './paths';
+import { MIN_SUPPORTED_JEST_MAJOR } from './jestCompatibility';
+export { MIN_SUPPORTED_JEST_MAJOR } from './jestCompatibility';
 
 /**
  * Resolve `request` (a module id such as `jest/package.json` or `@example/test-tools`) starting from each of
@@ -111,9 +113,6 @@ export interface JestResolution {
   /** Which of the start dirs produced the hit. */
   resolvedFrom: string;
 }
-
-/** Lowest Jest major HyperJest drives (the warm engine relies on 29+ `TestRunner` / circus APIs). */
-export const MIN_SUPPORTED_JEST_MAJOR = 29;
 
 export function jestMajor(version: string): number {
   const m = /^(\d+)/.exec(version.trim().replace(/^[v^~>=<\s]+/, ''));

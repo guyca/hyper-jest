@@ -1,0 +1,225 @@
+name: Release repaired Jest updates
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Optional merged Jest repair PR to retry (older queued releases run first)
+        required: false
+        type: string
+
+permissions: {}
+
+# GitHub retains only one pending concurrency run. Every run scans all eligible
+# merged PRs, so replacing a pending event cannot lose a queued release.
+concurrency:
+  group: hyperjest-marketplace-release
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'master' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    outputs:
+      ready: ${{ steps.plan.outputs.ready }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      reuse: ${{ steps.plan.outputs.reuse }}
+      controller_sha: ${{ steps.controller.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: master
+          path: controller
+          persist-credentials: false
+      - name: Pin trusted release controller
+        id: controller
+        run: echo "sha=$(git -C controller rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Select oldest eligible merged repair
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_PR: ${{ inputs.pr_number }}
+        run: node controller/.github/scripts/jest-automation/release.mjs plan "$RUNNER_TEMP/release-candidate.json"
+      - uses: actions/upload-artifact@v7
+        if: steps.plan.outputs.ready == 'true'
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/release-candidate.json
+          if-no-files-found: error
+          retention-days: 90
+
+  package:
+    needs: queue
+    if: needs.queue.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # This job executes merged build code; it has no publishing identity or write token.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.queue.outputs.controller_sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/checkout@v7
+        if: needs.queue.outputs.reuse != 'true'
+        with:
+          ref: ${{ needs.queue.outputs.sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Install exact merged dependencies
+        if: needs.queue.outputs.reuse != 'true'
+        working-directory: source
+        env:
+          HUSKY: '0'
+          YARN_ENABLE_SCRIPTS: 'false'
+        run: |
+          corepack enable
+          corepack install
+          yarn install --immutable
+      - name: Build VSIX from the tested merge commit
+        if: needs.queue.outputs.reuse != 'true'
+        working-directory: source
+        run: |
+          yarn package
+          yarn check:package
+      - name: Validate and retain the exact release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node controller/.github/scripts/jest-automation/release.mjs stage
+          "$RUNNER_TEMP/candidate/release-candidate.json"
+          "$RUNNER_TEMP/release-artifact" "$GITHUB_WORKSPACE/source/hyperjest.vsix"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-vsix
+          path: ${{ runner.temp }}/release-artifact/
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    needs: [queue, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Configure this environment to allow deployments from master only, with
+    # AZURE_CLIENT_ID and AZURE_TENANT_ID variables and an Entra federated identity.
+    environment: marketplace
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.queue.outputs.controller_sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-vsix
+          path: ${{ runner.temp }}/release-artifact
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Reserve draft release and exact VSIX before authentication
+        working-directory: controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node .github/scripts/jest-automation/release.mjs reserve
+          "$RUNNER_TEMP/candidate/release-candidate.json" "$RUNNER_TEMP/release-artifact"
+      - name: Install pinned publication tool from trusted controller revision
+        working-directory: controller
+        env:
+          HUSKY: '0'
+          YARN_ENABLE_SCRIPTS: 'false'
+        run: |
+          corepack enable
+          corepack install
+          yarn install --immutable
+      - name: Check Marketplace identity configuration
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_TENANT_ID" ]; then
+            echo '::error::Configure AZURE_CLIENT_ID and AZURE_TENANT_ID in the marketplace environment and authorize the federated identity for publisher GuyCarmeli.'
+            exit 1
+          fi
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+      - name: Publish retained VSIX and finalize GitHub release
+        working-directory: controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: >-
+          node .github/scripts/jest-automation/release.mjs publish
+          "$RUNNER_TEMP/candidate/release-candidate.json" "$RUNNER_TEMP/release-artifact"
+
+  report:
+    needs: [queue, package, publish]
+    if: always() && needs.queue.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.queue.outputs.controller_sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-candidate
+          path: ${{ runner.temp }}/candidate
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Report result and continue the durable queue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RESULT: ${{ needs.publish.result }}
+        run: node controller/.github/scripts/jest-automation/release.mjs report "$RUNNER_TEMP/candidate/release-candidate.json"

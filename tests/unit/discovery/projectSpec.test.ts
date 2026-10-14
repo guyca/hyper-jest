@@ -263,7 +263,7 @@ describe('discoverProjects: degraded and overridden packages', () => {
     expect(srv).toMatchObject({ status: 'unavailable', reason: 'node_modules is not installed under /w/uninstalled — run `yarn install` there', nodeVersion: 'v24.19.0' });
     expect(srv.jestVersion).toBeUndefined();
     expect(srv.warnings).toEqual([expect.stringMatching(/Node 20\.19\.4 requested by \/w\/uninstalled\/\.nvmrc is not installed/)]);
-    expect(by(specs, '/w/uninstalled/serverless/rpc')).toMatchObject({ status: 'unsupported', repoRoot: '/w/uninstalled/serverless/rpc', reason: expect.stringMatching(/declares jest \^27\.4\.7 \(< 29\)/) });
+    expect(by(specs, '/w/uninstalled/serverless/rpc')).toMatchObject({ status: 'unsupported', repoRoot: '/w/uninstalled/serverless/rpc', reason: expect.stringMatching(/declares jest \^27\.4\.7 \(< 28\)/) });
     expect(by(specs, '/w/browser/packages/appium')).toMatchObject({ status: 'notJest', reason: expect.stringMatching(/jest is only a dependency; test tooling is webdriverio, appium/) });
     expect(specs.find(s => s.packageDir === '/w/uninstalled')).toBeUndefined();
   });

@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import { defaultResolveFrom, loadJestChain, majorOf, resolveJestChainDirs, type ResolveFrom } from '../../../src/worker/jestChain';
 
 describe('jestChain', () => {
@@ -31,10 +32,11 @@ describe('jestChain', () => {
     expect(dirs.jest).toBe('/given/jest');
   });
 
-  it('resolves and loads the real chain of this repo (jest 29.7)', () => {
+  it('resolves and loads the real chain of the root Jest dependency', () => {
     const repoRoot = path.resolve(__dirname, '../../..');
     const chain = loadJestChain(repoRoot, undefined, defaultResolveFrom);
-    expect(majorOf(chain.version)).toBe(29);
+    const declaredVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).devDependencies.jest;
+    expect(chain.version).toBe(declaredVersion);
     expect(chain.dirs.jest).toBe(path.join(repoRoot, 'node_modules', 'jest'));
     expect(typeof chain.modules.config.readConfigs).toBe('function');
     expect(typeof chain.modules.Runtime.createContext).toBe('function');
