@@ -90,7 +90,15 @@ async function inspect() {
   const master = (await api('git/ref/heads/master')).object.sha;
   const before = await remoteJson(master, 'package.json');
   const proposed = await remoteJson(pr.head.sha, 'package.json');
-  assertJestUpgrade(before, proposed);
+  // Every Dependabot CI completion reaches this controller. Unrelated changes
+  // and unsupported Jest versions are normal automatic-trigger exclusions;
+  // explicit manual requests still report why the PR cannot be repaired.
+  try {
+    assertJestUpgrade(before, proposed);
+  } catch (error) {
+    if (manual || !(error instanceof assert.AssertionError)) throw error;
+    return;
+  }
   const current = await stateFor(number);
   output('pr_number', number);
   output('head_sha', pr.head.sha);
