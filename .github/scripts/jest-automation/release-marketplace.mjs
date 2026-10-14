@@ -3,17 +3,18 @@ import { promisify } from 'node:util';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { compareVersions, EXTENSION_ID, inspectVsix } from './release.mjs';
-import { releaseRequest } from './release-http.mjs';
+import { ReleaseDeadlineExceeded, releaseRequest } from './release-http.mjs';
 
 const run = promisify(execFile);
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const PACKAGE_ASSET = 'Microsoft.VisualStudio.Services.VSIXPackage';
 
 export class Marketplace {
-  constructor({ directory, fetcher = fetch, wait = sleep, publishCommand = null, runner = run }) {
+  constructor({ directory, fetcher = fetch, wait = sleep, publishCommand = null, runner = run, now = () => performance.now() }) {
     this.directory = directory; this.fetcher = fetcher; this.wait = wait; this.publishCommand = publishCommand; this.runner = runner;
+    this.now = now;
   }
-  async versions(validated = false) {
+  async versions(validated = false, remainingTime = undefined) {
     const data = await releaseRequest('https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery?api-version=7.2-preview.1', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
@@ -22,6 +23,7 @@ export class Marketplace {
       }),
     }, {
       label: 'Marketplace version lookup', fetcher: this.fetcher, wait: this.wait, timeout: 60_000, retry: true,
+      remainingTime,
     });
     if (!Array.isArray(data.results)) throw new Error('Marketplace returned an invalid query response.');
     const extension = data.results.flatMap(result => result.extensions ?? []).find(item =>
@@ -48,27 +50,41 @@ export class Marketplace {
   }
   async verify(candidate, expected) {
     // Allow eight minutes for asynchronous Marketplace validation, including
-    // first-publication scanning. A timeout leaves the draft for retry.
-    for (let attempt = 0; attempt < 49; attempt++) {
-      const version = (await this.versions(true)).find(item => item.version === candidate.version && (!item.targetPlatform || item.targetPlatform === 'universal'));
-      if (version) {
-        const uri = version.files?.find(file => file.assetType === PACKAGE_ASSET)?.source ?? `${version.assetUri}/${PACKAGE_ASSET}`;
-        const url = new URL(uri);
-        if (url.protocol !== 'https:' || !(url.hostname === 'marketplace.visualstudio.com' || url.hostname.endsWith('.vsassets.io') || url.hostname.endsWith('.gallerycdn.vsassets.io'))) {
-          throw new Error('Marketplace returned an unexpected VSIX download host.');
+    // requests, retry backoff, downloads, and polling sleeps. Each request's
+    // abort timeout is capped by the same monotonic deadline.
+    const deadline = this.now() + 8 * 60_000;
+    const remainingTime = () => {
+      const remaining = Math.ceil(deadline - this.now());
+      if (remaining <= 0) throw new ReleaseDeadlineExceeded();
+      return remaining;
+    };
+    try {
+      for (;;) {
+        remainingTime();
+        const version = (await this.versions(true, remainingTime)).find(item => item.version === candidate.version && (!item.targetPlatform || item.targetPlatform === 'universal'));
+        if (version) {
+          const uri = version.files?.find(file => file.assetType === PACKAGE_ASSET)?.source ?? `${version.assetUri}/${PACKAGE_ASSET}`;
+          const url = new URL(uri);
+          if (url.protocol !== 'https:' || !(url.hostname === 'marketplace.visualstudio.com' || url.hostname.endsWith('.vsassets.io') || url.hostname.endsWith('.gallerycdn.vsassets.io'))) {
+            throw new Error('Marketplace returned an unexpected VSIX download host.');
+          }
+          const bytes = await releaseRequest(url, {}, {
+            label: 'Published VSIX download', fetcher: this.fetcher, wait: this.wait, retry: true,
+            decode: async response => Buffer.from(await response.arrayBuffer()),
+            remainingTime,
+          });
+          const destination = path.join(this.directory, 'marketplace-verification.vsix');
+          await writeFile(destination, bytes);
+          const actual = await inspectVsix(destination, candidate);
+          remainingTime();
+          if (actual.payloadHash !== expected.payloadHash) throw new Error(`Marketplace version ${candidate.version} contains different extension files; refusing to claim this release.`);
+          return;
         }
-        const bytes = await releaseRequest(url, {}, {
-          label: 'Published VSIX download', fetcher: this.fetcher, wait: this.wait, retry: true,
-          decode: async response => Buffer.from(await response.arrayBuffer()),
-        });
-        const destination = path.join(this.directory, 'marketplace-verification.vsix');
-        await writeFile(destination, bytes);
-        const actual = await inspectVsix(destination, candidate);
-        if (actual.payloadHash !== expected.payloadHash) throw new Error(`Marketplace version ${candidate.version} contains different extension files; refusing to claim this release.`);
-        return;
+        await this.wait(Math.min(10_000, remainingTime()));
       }
-      if (attempt < 48) await this.wait(10_000);
+    } catch (error) {
+      if (!(error instanceof ReleaseDeadlineExceeded)) throw error;
     }
-    throw new Error(`Marketplace has not finished validating ${candidate.version}. Retry this workflow; it will reuse the same VSIX and verify before creating the public GitHub release.`);
+    throw new Error(`Marketplace verification of ${candidate.version} did not finish within eight minutes. Retry this workflow; it will reuse the same VSIX and verify before creating the public GitHub release.`);
   }
 }

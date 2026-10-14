@@ -129,7 +129,7 @@ jobs:
   publish:
     needs: [queue, package]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     # Configure this environment to allow deployments from master only, with
     # AZURE_CLIENT_ID and AZURE_TENANT_ID variables and an Entra federated identity.
     environment: marketplace

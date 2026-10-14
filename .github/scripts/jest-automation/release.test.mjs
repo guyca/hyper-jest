@@ -349,18 +349,69 @@ test('installed pinned VSCE executable actually runs its CLI', async t => {
   assert.equal(version, pkg.version);
 });
 
-test('Marketplace validation timeout never finalizes a release', async () => {
-  let waits = 0;
-  const marketplace = new Marketplace({ directory: '/unused', wait: async () => { waits++; }, fetcher: async () => new Response(JSON.stringify({ results: [] })) });
-  await assert.rejects(marketplace.verify(candidate, { payloadHash: 'unused' }), /not finished validating/);
-  assert.equal(waits, 48);
+test('slow Marketplace queries consume the deadline and leave the original release draft for retry', async t => {
+  const { api, output, directory } = await fixture(t);
+  let elapsed = 0;
+  let queries = 0;
+  const marketplace = new Marketplace({ directory, now: () => elapsed,
+    wait: async milliseconds => { elapsed += milliseconds; },
+    fetcher: async () => { queries++; elapsed += 10_000; return Response.json({ results: [] }); },
+  });
+  marketplace.version = async () => ({ version: candidate.version });
+  marketplace.latestVersion = async () => candidate.version;
+  await assert.rejects(publishRelease(api, marketplace, candidate, output), /verification.*eight minutes/);
+  assert.equal(elapsed, 8 * 60_000);
+  assert.equal(queries, 24);
+  assert.equal((await api.release(candidate.tag)).draft, true);
+  assert.equal(api.calls.includes('finalize'), false);
+  assert.ok((await planRelease(api)).candidate.existingAssetId);
+});
+
+test('Marketplace polling sleeps only until the remaining deadline', async () => {
+  let elapsed = 0;
+  const waits = [];
+  const marketplace = new Marketplace({ directory: '/unused', now: () => elapsed,
+    wait: async milliseconds => { waits.push(milliseconds); elapsed += milliseconds; },
+    fetcher: async () => { elapsed = 475_000; return Response.json({ results: [] }); },
+  });
+  await assert.rejects(marketplace.verify(candidate, {}), /verification.*eight minutes/);
+  assert.equal(elapsed, 480_000);
+  assert.deepEqual(waits, [5000]);
+});
+
+test('Marketplace downloads share the polling deadline and cannot succeed after expiry', async t => {
+  let elapsed = 0;
+  const timeouts = [];
+  let downloads = 0;
+  t.mock.method(AbortSignal, 'timeout', milliseconds => {
+    timeouts.push(milliseconds);
+    return new AbortController().signal;
+  });
+  const marketplace = new Marketplace({ directory: '/unused', now: () => elapsed,
+    wait: async () => assert.fail('Expired downloads must not retry'),
+    fetcher: async url => {
+      if (String(url).includes('extensionquery')) {
+        elapsed = 450_000;
+        return Response.json({ results: [{ extensions: [{ publisher: { publisherName: 'GuyCarmeli' }, extensionName: 'hyperjest',
+          versions: [{ version: candidate.version, assetUri: 'https://guyc.gallery.vsassets.io/package' }],
+        }] }] });
+      }
+      downloads++;
+      return { status: 200, ok: true, arrayBuffer: async () => { elapsed += 30_000; return new ArrayBuffer(0); } };
+    },
+  });
+  await assert.rejects(marketplace.verify(candidate, {}), /verification.*eight minutes/);
+  assert.equal(elapsed, 480_000);
+  assert.equal(downloads, 1);
+  assert.deepEqual(timeouts, [60_000, 30_000]);
 });
 
 test('Marketplace validation can complete after the original three-minute window', async t => {
   const { source, directory, manifest } = await fixture(t);
   const bytes = await readFile(source);
   let waits = 0;
-  const marketplace = new Marketplace({ directory, wait: async () => { waits++; }, fetcher: async url => {
+  let elapsed = 0;
+  const marketplace = new Marketplace({ directory, now: () => elapsed, wait: async milliseconds => { waits++; elapsed += milliseconds; }, fetcher: async url => {
     if (!String(url).includes('extensionquery')) return new Response(bytes);
     return Response.json({ results: [{ extensions: [{ publisher: { publisherName: 'GuyCarmeli' }, extensionName: 'hyperjest',
       versions: waits < 24 ? [] : [{ version: candidate.version, assetUri: 'https://guyc.gallery.vsassets.io/package' }],
@@ -368,6 +419,7 @@ test('Marketplace validation can complete after the original three-minute window
   } });
   await marketplace.verify(candidate, manifest);
   assert.equal(waits, 24);
+  assert.equal(elapsed, 240_000);
 });
 
 test('GitHub adapter accepts only successful native CI on the exact master commit', async () => {

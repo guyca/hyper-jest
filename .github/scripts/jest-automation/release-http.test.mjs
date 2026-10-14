@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { GitHubApi } from './release.mjs';
+import { ReleaseDeadlineExceeded, releaseRequest } from './release-http.mjs';
 
 test('GitHub reads retry transport and service errors with a fresh timeout', async () => {
   const signals = [];
@@ -65,3 +66,63 @@ test('release writes are never retried after an ambiguous transport or service f
     assert.equal(calls, 1);
   }
 });
+
+function remainingBudget(clock, deadline) {
+  return () => {
+    const remaining = deadline - clock.time;
+    if (remaining <= 0) throw new ReleaseDeadlineExceeded();
+    return remaining;
+  };
+}
+
+test('retry backoff uses the remaining deadline and cannot start another request after expiry', async t => {
+  const clock = { time: 0 };
+  const timeouts = [];
+  const waits = [];
+  let calls = 0;
+  t.mock.method(AbortSignal, 'timeout', milliseconds => {
+    timeouts.push(milliseconds);
+    return new AbortController().signal;
+  });
+  await assert.rejects(releaseRequest('https://example.test', {}, {
+    label: 'Deadline test', retry: true, remainingTime: remainingBudget(clock, 2500),
+    fetcher: async () => { calls++; clock.time += 2000; throw new TypeError('fetch failed'); },
+    wait: async milliseconds => { waits.push(milliseconds); clock.time += milliseconds; },
+  }), ReleaseDeadlineExceeded);
+  assert.equal(calls, 1);
+  assert.deepEqual(timeouts, [2500]);
+  assert.deepEqual(waits, [500]);
+  assert.equal(clock.time, 2500);
+});
+
+for (const phase of ['request', 'response body']) {
+  test(`deadline aborts an in-flight ${phase} without retrying`, async t => {
+    const clock = { time: 0 };
+    const timeouts = [];
+    let calls = 0;
+    t.mock.method(AbortSignal, 'timeout', milliseconds => {
+      timeouts.push(milliseconds);
+      const controller = new AbortController();
+      queueMicrotask(() => {
+        clock.time += milliseconds;
+        controller.abort(new DOMException('Timed out', 'TimeoutError'));
+      });
+      return controller.signal;
+    });
+    const untilAborted = signal => new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    await assert.rejects(releaseRequest('https://example.test', {}, {
+      label: 'Deadline test', retry: true, remainingTime: remainingBudget(clock, 25),
+      fetcher: async (url, { signal }) => {
+        calls++;
+        return phase === 'request' ? untilAborted(signal)
+          : { status: 200, ok: true, json: () => untilAborted(signal) };
+      },
+      wait: async () => assert.fail('Deadline expiry must not retry'),
+    }), ReleaseDeadlineExceeded);
+    assert.equal(calls, 1);
+    assert.deepEqual(timeouts, [25]);
+  });
+}

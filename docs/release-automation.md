@@ -193,8 +193,10 @@ successful retry. Conflicting artifacts stop the workflow instead of being
 overwritten. Read requests retry transient network and service errors up to three
 times; failures identify the operation and error code without printing credentials
 or signed download URLs. Publishing and other write requests are not automatically
-repeated. Marketplace validation is polled for up to eight minutes before leaving
-the draft for a later retry. Draft updates preserve the version tag; recovery also
+repeated. Marketplace verification has an eight-minute elapsed-time deadline,
+including requests, retries, downloads, and polling sleeps, before leaving the
+draft for a later retry. The publish job allows 25 minutes for setup, publication,
+verification, and finalization. Draft updates preserve the version tag; recovery also
 recognizes older `untagged-*` drafts by their release metadata and reuses the oldest
 reservation after validating its source and checksums.
 
