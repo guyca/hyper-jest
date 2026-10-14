@@ -103,13 +103,14 @@ async function inspect() {
   const latest = runs.workflow_runs.filter(item => item.head_sha === pr.head.sha).sort((a, b) => b.id - a.id)[0];
   if (!latest || latest.status !== 'completed') return;
   if (!manual && latest.id !== run.id) return;
+  const pendingRefresh = current.state.operation?.kind === 'metadata' && current.state.operation.status !== 'pushed';
   const refresh = manual && current.state.attempts.length > 0 && latest.conclusion === 'success' &&
-    (current.state.headSha !== pr.head.sha || current.state.baseSha !== master || current.state.status === 'stale');
+    (current.state.headSha !== pr.head.sha || current.state.baseSha !== master || current.state.status === 'stale' || pendingRefresh);
   if (latest.conclusion === 'success' && !refresh) {
-    if (current.state.headSha !== pr.head.sha || !['pushed', 'ready'].includes(current.state.status)) return;
-    if (current.state.baseSha !== master) {
+    if (!['pushed', 'ready'].includes(current.state.status)) return;
+    if (current.state.headSha !== pr.head.sha || current.state.baseSha !== master) {
       await removeReady(number);
-      await saveState(number, current, { ...current.state, status: 'stale' }, 'CI passed, but master advanced. Rebase and rerun the repair workflow before release.');
+      await saveState(number, current, { ...current.state, status: 'stale' }, 'CI passed, but the PR head or master changed since the repair. Rerun the repair workflow manually to refresh release metadata and validate before release.');
       await assign(number);
       return;
     }
@@ -122,7 +123,9 @@ async function inspect() {
     return;
   }
   if (!refresh && !['failure', 'timed_out'].includes(latest.conclusion)) return;
-  const decision = decideAttempt({ state: current.state, headSha: pr.head.sha, manual });
+  // Refreshes only regenerate trusted release metadata and rerun validation;
+  // no agent runs, so they neither consume nor require an agent attempt.
+  const decision = refresh ? 'repair' : decideAttempt({ state: current.state, headSha: pr.head.sha, manual });
   if (decision !== 'repair') {
     if (decision === 'exhausted') {
       await removeReady(number);
@@ -149,8 +152,12 @@ async function inspect() {
   const failures = jobs.jobs.filter(job => ['failure', 'timed_out'].includes(job.conclusion)).map(job => `${job.name}: ${job.conclusion}; ${job.html_url}; failing steps: ${job.steps.filter(step => step.conclusion === 'failure').map(step => step.name).join(', ')}`);
   writeFileSync(process.env.CONTEXT_PATH, JSON.stringify({ prNumber: number, headSha: pr.head.sha, baseSha: master, jest: rootJest(proposed), failures }, null, 2));
   await removeReady(number);
-  const state = { ...current.state, status: 'repairing', originalHeadSha: current.state.originalHeadSha ?? pr.head.sha, baseSha: master, attempts: [...current.state.attempts, { headSha: pr.head.sha, runId: process.env.GITHUB_RUN_ID, status: 'running' }] };
-  await saveState(number, current, state, `Repair attempt ${state.attempts.length}/2 is running for ${pr.head.sha}.`);
+  const operation = { kind: refresh ? 'metadata' : 'repair', headSha: pr.head.sha, runId: process.env.GITHUB_RUN_ID, status: 'running' };
+  const attempts = refresh ? current.state.attempts : [...current.state.attempts, { headSha: pr.head.sha, runId: operation.runId, status: 'running' }];
+  const state = { ...current.state, status: 'repairing', originalHeadSha: current.state.originalHeadSha ?? pr.head.sha, operation, attempts };
+  await saveState(number, current, state, refresh
+    ? `Release metadata refresh is running for ${pr.head.sha}; no agent attempt is consumed.`
+    : `Repair attempt ${state.attempts.length}/2 is running for ${pr.head.sha}.`);
   await assign(number);
   output('repair', 'true');
   output('metadata_only', refresh ? 'true' : 'false');
@@ -275,16 +282,22 @@ async function push() {
 
 async function record() {
   const current = await stateFor(prNumber);
+  const operation = current.state.operation;
+  assert.equal(operation?.runId, process.env.GITHUB_RUN_ID, 'Another repair owns the state');
+  assert(['repair', 'metadata'].includes(operation.kind), 'Unknown repair operation');
   const attempts = current.state.attempts;
-  const attempt = attempts.at(-1);
-  assert.equal(attempt?.runId, process.env.GITHUB_RUN_ID, 'Another repair owns the state');
   const succeeded = process.env.PUSH_RESULT === 'success' && /^[a-f0-9]{40}$/.test(process.env.PUSHED_SHA ?? '');
   const status = succeeded ? 'pushed' : 'failed';
-  attempt.status = status;
-  const state = { ...current.state, status, attempts, ...(succeeded ? { headSha: process.env.PUSHED_SHA, baseSha, version: process.env.RELEASE_VERSION } : {}) };
+  if (operation.kind === 'repair') {
+    const attempt = attempts.at(-1);
+    assert.equal(attempt?.runId, process.env.GITHUB_RUN_ID, 'Another repair owns the state');
+    attempt.status = status;
+  }
+  const state = { ...current.state, status, operation: { ...operation, status }, attempts, ...(succeeded ? { headSha: process.env.PUSHED_SHA, baseSha, version: process.env.RELEASE_VERSION } : {}) };
+  const description = operation.kind === 'metadata' ? 'Release metadata refresh' : 'Repair attempt';
   await saveState(prNumber, current, state, succeeded
     ? `Repair pushed at ${state.headSha}; waiting for normal CI before release eligibility. @${ASSIGNEE}, please review once checks pass.`
-    : `Repair attempt failed or became stale. See [workflow run](https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}). The PR remains assigned to @${ASSIGNEE}.`);
+    : `${description} failed or became stale. See [workflow run](https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}). The PR remains assigned to @${ASSIGNEE}.`);
   await assign(prNumber);
 }
 

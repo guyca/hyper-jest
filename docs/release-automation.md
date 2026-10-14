@@ -50,13 +50,20 @@ at the inspected revisions. It uses a normal fast-forward push and does not
 force-push or merge. The controller assigns `guyca` and marks the exact repaired
 commit `jest-repair-ready` after ordinary PR CI passes.
 
-There are at most two repair attempts per PR, each with a 20-minute agent timeout.
+There are at most two agent repair attempts per PR, each with a 20-minute agent timeout.
 Duplicate events do not spend another attempt. Failed or stale work is reported
-on the PR. A manual retry still counts toward the same limit:
+on the PR. A manual retry of failing CI still counts toward the same limit:
 
 ```sh
 gh workflow run jest-repair.yml --ref master -f pr_number=30
 ```
+
+If the PR head or master changes after a repair, successful CI clears the ready
+label and marks the repair stale. Run the same command to refresh its version and
+changelog against master. With passing CI, this refresh skips the agent, does not
+consume an agent attempt, and remains available after both attempts are used.
+It still requires full validation, a fresh push, and successful CI on that new
+commit before restoring release readiness. A failed refresh can be retried.
 
 Repair commits include the extension version and changelog. Compatible fixes get
 a patch bump. New Jest-major support gets a minor bump. Removing a guaranteed

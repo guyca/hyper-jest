@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'Dependabot PR number (retries still count toward the two-attempt limit)'
+        description: 'Dependabot PR number (agent retries count toward two attempts; metadata refreshes do not)'
         required: true
         type: number
 
