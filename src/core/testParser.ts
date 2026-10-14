@@ -79,7 +79,8 @@ export function parseTestFile(source: string, path: string): ParsedFile {
 /**
  * Babel plugin sets to try for a path, most likely first. Exported for tests.
  * `decorators-legacy` is always on (it only changes parsing when `@` appears); files that still fail
- * and contain `@` are retried with the modern `decorators` proposal.
+ * and contain `@` are retried with the modern `decorators` proposal (Babel 8: bare plugin name —
+ * `decoratorsBeforeExport` and other decorator options were removed).
  */
 export function pluginSetsFor(path: string, source: string): ParserPlugin[][] {
   const ext = extensionOf(path);
@@ -99,7 +100,7 @@ export function pluginSetsFor(path: string, source: string): ParserPlugin[][] {
   }
   const withDecorators = sets.map(s => [...s, 'decorators-legacy' as ParserPlugin]);
   if (source.includes('@')) {
-    for (const s of sets) withDecorators.push([...s, ['decorators', { decoratorsBeforeExport: false }]]);
+    for (const s of sets) withDecorators.push([...s, 'decorators' as ParserPlugin]);
   }
   return withDecorators;
 }
@@ -288,7 +289,12 @@ function testCallToNode(call: t.CallExpression, ctx: WalkCtx): ParsedNode | null
  * `(0, _globals.describe)`, `it!`, `(it as any)`, and the two `.each` shapes (where the callee itself is
  * the `X.each(table)` call or the `` X.each`table` `` tagged template).
  */
-function analyzeCallee(callee: t.Expression | t.V8IntrinsicIdentifier | t.Super, aliases: Map<string, string>): CalleeInfo | null {
+function analyzeCallee(
+  callee: t.Expression | t.V8IntrinsicIdentifier | t.Super | t.Import,
+  aliases: Map<string, string>,
+): CalleeInfo | null {
+  // Babel 8: CallExpression.callee includes Import (`import()`); never a Jest global.
+  if (callee.type === 'Import') return null;
   const target = unwrapExpression(callee);
   let each = false;
   let chainNode: t.Node = target;
@@ -407,7 +413,8 @@ function constantString(node: t.Node, source: string): string | null {
     case 'NumericLiteral':
       return String(node.value);
     case 'BigIntLiteral':
-      return node.value;
+      // Babel 8: BigIntLiteral.value is bigint (was string in Babel 7).
+      return String(node.value);
     case 'TemplateLiteral':
       if (node.expressions.length > 0) return null;
       return node.quasis[0]?.value.cooked ?? node.quasis[0]?.value.raw ?? '';

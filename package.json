@@ -2,19 +2,36 @@
   "name": "hyperjest",
   "displayName": "HyperJest",
   "description": "Multi-core Jest test runner for VS Code with real-time gutter coverage, inline errors and live values.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "GuyCarmeli",
   "private": true,
   "packageManager": "yarn@4.18.0",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/guyca/hyper-jest.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guyca/hyper-jest.git"
+  },
   "homepage": "https://github.com/guyca/hyper-jest#readme",
-  "bugs": { "url": "https://github.com/guyca/hyper-jest/issues" },
+  "bugs": {
+    "url": "https://github.com/guyca/hyper-jest/issues"
+  },
   "icon": ".github/media/icon.png",
-  "engines": { "vscode": "^1.134.0", "node": ">=22" },
-  "categories": ["Testing"],
-  "extensionKind": ["workspace"],
-  "capabilities": { "untrustedWorkspaces": { "supported": false }, "virtualWorkspaces": false },
+  "engines": {
+    "vscode": "^1.134.0",
+    "node": ">=22"
+  },
+  "categories": [
+    "Testing"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": false
+  },
   "main": "./dist/extension.js",
   "activationEvents": [
     "onLanguage:typescript",
@@ -25,159 +42,703 @@
   ],
   "contributes": {
     "commands": [
-      { "command": "hyperjest.start", "title": "Start", "category": "HyperJest", "icon": "$(play)" },
-      { "command": "hyperjest.stop", "title": "Stop", "category": "HyperJest", "icon": "$(debug-stop)" },
-      { "command": "hyperjest.restart", "title": "Restart (recycle workers)", "category": "HyperJest" },
-      { "command": "hyperjest.togglePause", "title": "Pause / Resume Live Runs", "category": "HyperJest" },
-      { "command": "hyperjest.toggleRunMode", "title": "Toggle Run Mode (on type / on save / manual)", "category": "HyperJest" },
-      { "command": "hyperjest.runAll", "title": "Run All Tests", "category": "HyperJest" },
-      { "command": "hyperjest.runProjectTests", "title": "Run Project Tests", "category": "HyperJest" },
-      { "command": "hyperjest.runFileTests", "title": "Run File Tests", "category": "HyperJest", "icon": "$(run)" },
-      { "command": "hyperjest.runLineTests", "title": "Run Line Tests", "category": "HyperJest" },
-      { "command": "hyperjest.runFailingTests", "title": "Run Failing Tests", "category": "HyperJest" },
-      { "command": "hyperjest.debugLineTest", "title": "Debug Line Test", "category": "HyperJest", "icon": "$(debug-alt)" },
-      { "command": "hyperjest.debugFileTests", "title": "Debug File Tests", "category": "HyperJest" },
-      { "command": "hyperjest.updateTestSnapshots", "title": "Update Test Snapshots", "category": "HyperJest" },
-      { "command": "hyperjest.updateFileSnapshots", "title": "Update File Snapshots", "category": "HyperJest" },
-      { "command": "hyperjest.updateProjectSnapshots", "title": "Update Project Snapshots", "category": "HyperJest" },
-      { "command": "hyperjest.jumpToFailingTest", "title": "Jump to Failing Test", "category": "HyperJest" },
-      { "command": "hyperjest.jumpToErrorSource", "title": "Jump to Error Source", "category": "HyperJest" },
-      { "command": "hyperjest.showLineDetails", "title": "Show Line Details", "category": "HyperJest" },
-      { "command": "hyperjest.showDiff", "title": "Show Expected / Actual Diff", "category": "HyperJest" },
-      { "command": "hyperjest.copyValue", "title": "Copy Line Value", "category": "HyperJest" },
-      { "command": "hyperjest.clearValues", "title": "Clear Line Values", "category": "HyperJest" },
-      { "command": "hyperjest.clearFileValues", "title": "Clear File Values", "category": "HyperJest" },
-      { "command": "hyperjest.toggleCoverage", "title": "Toggle Coverage Indicators", "category": "HyperJest" },
-      { "command": "hyperjest.selectConfigurations", "title": "Select Configurations", "category": "HyperJest" },
-      { "command": "hyperjest.selectProjectForFile", "title": "Select Jest Project for Current File", "category": "HyperJest" },
-      { "command": "hyperjest.showResolvedConfig", "title": "Show Resolved Jest Config", "category": "HyperJest" },
-      { "command": "hyperjest.doctor", "title": "Doctor (diagnose workspace)", "category": "HyperJest" },
-      { "command": "hyperjest.copyDiagnostics", "title": "Copy Diagnostics Report", "category": "HyperJest" },
-      { "command": "hyperjest.clearCache", "title": "Clear Caches", "category": "HyperJest" },
-      { "command": "hyperjest.showOutput", "title": "Show Output", "category": "HyperJest" },
-      { "command": "hyperjest.showMenu", "title": "Show Menu", "category": "HyperJest" },
-      { "command": "hyperjest.openFrame", "title": "Open Stack Frame", "category": "HyperJest" },
-      { "command": "hyperjest.runDeferred", "title": "Run Deferred Affected Tests", "category": "HyperJest" },
-      { "command": "hyperjest.openDoctorReport", "title": "Open Last Doctor Report", "category": "HyperJest" }
+      {
+        "command": "hyperjest.start",
+        "title": "Start",
+        "category": "HyperJest",
+        "icon": "$(play)"
+      },
+      {
+        "command": "hyperjest.stop",
+        "title": "Stop",
+        "category": "HyperJest",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "hyperjest.restart",
+        "title": "Restart (recycle workers)",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.togglePause",
+        "title": "Pause / Resume Live Runs",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.toggleRunMode",
+        "title": "Toggle Run Mode (on type / on save / manual)",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.runAll",
+        "title": "Run All Tests",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.runProjectTests",
+        "title": "Run Project Tests",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.runFileTests",
+        "title": "Run File Tests",
+        "category": "HyperJest",
+        "icon": "$(run)"
+      },
+      {
+        "command": "hyperjest.runLineTests",
+        "title": "Run Line Tests",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.runFailingTests",
+        "title": "Run Failing Tests",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.debugLineTest",
+        "title": "Debug Line Test",
+        "category": "HyperJest",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "hyperjest.debugFileTests",
+        "title": "Debug File Tests",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.updateTestSnapshots",
+        "title": "Update Test Snapshots",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.updateFileSnapshots",
+        "title": "Update File Snapshots",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.updateProjectSnapshots",
+        "title": "Update Project Snapshots",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.jumpToFailingTest",
+        "title": "Jump to Failing Test",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.jumpToErrorSource",
+        "title": "Jump to Error Source",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.showLineDetails",
+        "title": "Show Line Details",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.showDiff",
+        "title": "Show Expected / Actual Diff",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.copyValue",
+        "title": "Copy Line Value",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.clearValues",
+        "title": "Clear Line Values",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.clearFileValues",
+        "title": "Clear File Values",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.toggleCoverage",
+        "title": "Toggle Coverage Indicators",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.selectConfigurations",
+        "title": "Select Configurations",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.selectProjectForFile",
+        "title": "Select Jest Project for Current File",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.showResolvedConfig",
+        "title": "Show Resolved Jest Config",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.doctor",
+        "title": "Doctor (diagnose workspace)",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.copyDiagnostics",
+        "title": "Copy Diagnostics Report",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.clearCache",
+        "title": "Clear Caches",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.showOutput",
+        "title": "Show Output",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.showMenu",
+        "title": "Show Menu",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.openFrame",
+        "title": "Open Stack Frame",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.runDeferred",
+        "title": "Run Deferred Affected Tests",
+        "category": "HyperJest"
+      },
+      {
+        "command": "hyperjest.openDoctorReport",
+        "title": "Open Last Doctor Report",
+        "category": "HyperJest"
+      }
     ],
     "menus": {
       "commandPalette": [
-        { "command": "hyperjest.openFrame", "when": "false" },
-        { "command": "hyperjest.runDeferred", "when": "hyperjest.hasDeferred" }
+        {
+          "command": "hyperjest.openFrame",
+          "when": "false"
+        },
+        {
+          "command": "hyperjest.runDeferred",
+          "when": "hyperjest.hasDeferred"
+        }
       ],
       "editor/lineNumber/context": [
-        { "command": "hyperjest.runLineTests", "group": "1_hyperjest@1", "when": "editorLineNumber in hyperjest.linesWithTestDeclaration" },
-        { "command": "hyperjest.debugLineTest", "group": "1_hyperjest@2", "when": "editorLineNumber in hyperjest.linesWithTestDeclaration" },
-        { "command": "hyperjest.updateTestSnapshots", "group": "1_hyperjest@3", "when": "editorLineNumber in hyperjest.linesWithSnapshot" },
-        { "command": "hyperjest.jumpToFailingTest", "group": "2_hyperjest@1", "when": "editorLineNumber in hyperjest.linesWithError" },
-        { "command": "hyperjest.showLineDetails", "group": "2_hyperjest@2", "when": "editorLineNumber in hyperjest.linesWithError || editorLineNumber in hyperjest.linesWithValues || editorLineNumber in hyperjest.coveredLines" },
-        { "command": "hyperjest.copyValue", "group": "2_hyperjest@3", "when": "editorLineNumber in hyperjest.linesWithValues" }
+        {
+          "command": "hyperjest.runLineTests",
+          "group": "1_hyperjest@1",
+          "when": "editorLineNumber in hyperjest.linesWithTestDeclaration"
+        },
+        {
+          "command": "hyperjest.debugLineTest",
+          "group": "1_hyperjest@2",
+          "when": "editorLineNumber in hyperjest.linesWithTestDeclaration"
+        },
+        {
+          "command": "hyperjest.updateTestSnapshots",
+          "group": "1_hyperjest@3",
+          "when": "editorLineNumber in hyperjest.linesWithSnapshot"
+        },
+        {
+          "command": "hyperjest.jumpToFailingTest",
+          "group": "2_hyperjest@1",
+          "when": "editorLineNumber in hyperjest.linesWithError"
+        },
+        {
+          "command": "hyperjest.showLineDetails",
+          "group": "2_hyperjest@2",
+          "when": "editorLineNumber in hyperjest.linesWithError || editorLineNumber in hyperjest.linesWithValues || editorLineNumber in hyperjest.coveredLines"
+        },
+        {
+          "command": "hyperjest.copyValue",
+          "group": "2_hyperjest@3",
+          "when": "editorLineNumber in hyperjest.linesWithValues"
+        }
       ],
       "editor/context": [
-        { "submenu": "hyperjest.editorSubmenu", "group": "2_hyperjest", "when": "hyperjest.isTestFile || hyperjest.isSourceFile" }
+        {
+          "submenu": "hyperjest.editorSubmenu",
+          "group": "2_hyperjest",
+          "when": "hyperjest.isTestFile || hyperjest.isSourceFile"
+        }
       ],
       "hyperjest.editorSubmenu": [
-        { "command": "hyperjest.runFileTests", "group": "1_run@1" },
-        { "command": "hyperjest.runLineTests", "group": "1_run@2", "when": "hyperjest.isTestFile" },
-        { "command": "hyperjest.debugLineTest", "group": "1_run@3", "when": "hyperjest.isTestFile" },
-        { "command": "hyperjest.updateFileSnapshots", "group": "2_snap@1", "when": "hyperjest.isTestFile" },
-        { "command": "hyperjest.jumpToFailingTest", "group": "3_nav@1" },
-        { "command": "hyperjest.jumpToErrorSource", "group": "3_nav@2" },
-        { "command": "hyperjest.showResolvedConfig", "group": "4_diag@1" }
+        {
+          "command": "hyperjest.runFileTests",
+          "group": "1_run@1"
+        },
+        {
+          "command": "hyperjest.runLineTests",
+          "group": "1_run@2",
+          "when": "hyperjest.isTestFile"
+        },
+        {
+          "command": "hyperjest.debugLineTest",
+          "group": "1_run@3",
+          "when": "hyperjest.isTestFile"
+        },
+        {
+          "command": "hyperjest.updateFileSnapshots",
+          "group": "2_snap@1",
+          "when": "hyperjest.isTestFile"
+        },
+        {
+          "command": "hyperjest.jumpToFailingTest",
+          "group": "3_nav@1"
+        },
+        {
+          "command": "hyperjest.jumpToErrorSource",
+          "group": "3_nav@2"
+        },
+        {
+          "command": "hyperjest.showResolvedConfig",
+          "group": "4_diag@1"
+        }
       ],
       "editor/title/run": [
-        { "command": "hyperjest.runFileTests", "group": "navigation@1", "when": "hyperjest.isTestFile" },
-        { "command": "hyperjest.debugFileTests", "group": "navigation@2", "when": "hyperjest.isTestFile" }
+        {
+          "command": "hyperjest.runFileTests",
+          "group": "navigation@1",
+          "when": "hyperjest.isTestFile"
+        },
+        {
+          "command": "hyperjest.debugFileTests",
+          "group": "navigation@2",
+          "when": "hyperjest.isTestFile"
+        }
       ],
       "testing/item/context": [
-        { "command": "hyperjest.updateTestSnapshots", "group": "hyperjest@1", "when": "controllerId == hyperjest" },
-        { "command": "hyperjest.jumpToErrorSource", "group": "hyperjest@2", "when": "controllerId == hyperjest" },
-        { "command": "hyperjest.showResolvedConfig", "group": "hyperjest@3", "when": "controllerId == hyperjest" }
+        {
+          "command": "hyperjest.updateTestSnapshots",
+          "group": "hyperjest@1",
+          "when": "controllerId == hyperjest"
+        },
+        {
+          "command": "hyperjest.jumpToErrorSource",
+          "group": "hyperjest@2",
+          "when": "controllerId == hyperjest"
+        },
+        {
+          "command": "hyperjest.showResolvedConfig",
+          "group": "hyperjest@3",
+          "when": "controllerId == hyperjest"
+        }
       ],
       "testing/message/context": [
-        { "command": "hyperjest.showDiff", "when": "controllerId == hyperjest" }
+        {
+          "command": "hyperjest.showDiff",
+          "when": "controllerId == hyperjest"
+        }
       ]
     },
     "submenus": [
-      { "id": "hyperjest.editorSubmenu", "label": "HyperJest" }
+      {
+        "id": "hyperjest.editorSubmenu",
+        "label": "HyperJest"
+      }
     ],
     "keybindings": [
-      { "command": "hyperjest.runFileTests", "key": "ctrl+shift+j f", "mac": "cmd+shift+j f", "when": "editorTextFocus" },
-      { "command": "hyperjest.runLineTests", "key": "ctrl+shift+j l", "mac": "cmd+shift+j l", "when": "editorTextFocus" },
-      { "command": "hyperjest.debugLineTest", "key": "ctrl+shift+j d", "mac": "cmd+shift+j d", "when": "editorTextFocus" },
-      { "command": "hyperjest.runAll", "key": "ctrl+shift+j a", "mac": "cmd+shift+j a" },
-      { "command": "hyperjest.runFailingTests", "key": "ctrl+shift+j t", "mac": "cmd+shift+j t" },
-      { "command": "hyperjest.jumpToFailingTest", "key": "ctrl+shift+j o", "mac": "cmd+shift+j o", "when": "editorTextFocus" },
-      { "command": "hyperjest.jumpToErrorSource", "key": "ctrl+shift+j e", "mac": "cmd+shift+j e", "when": "editorTextFocus" },
-      { "command": "hyperjest.updateTestSnapshots", "key": "ctrl+shift+j u", "mac": "cmd+shift+j u", "when": "editorTextFocus" },
-      { "command": "hyperjest.toggleRunMode", "key": "ctrl+shift+j m", "mac": "cmd+shift+j m" },
-      { "command": "hyperjest.togglePause", "key": "ctrl+shift+j p", "mac": "cmd+shift+j p" },
-      { "command": "hyperjest.showMenu", "key": "ctrl+shift+j j", "mac": "cmd+shift+j j" },
-      { "command": "hyperjest.clearValues", "key": "escape", "when": "editorTextFocus && hyperjest.lineHasInlineValues && !editorHasMultipleSelections && !suggestWidgetVisible && !findWidgetVisible && !renameInputVisible && !referenceSearchVisible && !inReferenceSearchEditor && !quickFixWidgetVisible && !parameterHintsVisible" },
-      { "command": "hyperjest.clearFileValues", "key": "escape escape", "when": "editorTextFocus && !hyperjest.lineHasInlineValues && hyperjest.fileHasInlineValues && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !findWidgetVisible && !renameInputVisible && !referenceSearchVisible && !inReferenceSearchEditor && !quickFixWidgetVisible && !parameterHintsVisible" }
+      {
+        "command": "hyperjest.runFileTests",
+        "key": "ctrl+shift+j f",
+        "mac": "cmd+shift+j f",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "hyperjest.runLineTests",
+        "key": "ctrl+shift+j l",
+        "mac": "cmd+shift+j l",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "hyperjest.debugLineTest",
+        "key": "ctrl+shift+j d",
+        "mac": "cmd+shift+j d",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "hyperjest.runAll",
+        "key": "ctrl+shift+j a",
+        "mac": "cmd+shift+j a"
+      },
+      {
+        "command": "hyperjest.runFailingTests",
+        "key": "ctrl+shift+j t",
+        "mac": "cmd+shift+j t"
+      },
+      {
+        "command": "hyperjest.jumpToFailingTest",
+        "key": "ctrl+shift+j o",
+        "mac": "cmd+shift+j o",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "hyperjest.jumpToErrorSource",
+        "key": "ctrl+shift+j e",
+        "mac": "cmd+shift+j e",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "hyperjest.updateTestSnapshots",
+        "key": "ctrl+shift+j u",
+        "mac": "cmd+shift+j u",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "hyperjest.toggleRunMode",
+        "key": "ctrl+shift+j m",
+        "mac": "cmd+shift+j m"
+      },
+      {
+        "command": "hyperjest.togglePause",
+        "key": "ctrl+shift+j p",
+        "mac": "cmd+shift+j p"
+      },
+      {
+        "command": "hyperjest.showMenu",
+        "key": "ctrl+shift+j j",
+        "mac": "cmd+shift+j j"
+      },
+      {
+        "command": "hyperjest.clearValues",
+        "key": "escape",
+        "when": "editorTextFocus && hyperjest.lineHasInlineValues && !editorHasMultipleSelections && !suggestWidgetVisible && !findWidgetVisible && !renameInputVisible && !referenceSearchVisible && !inReferenceSearchEditor && !quickFixWidgetVisible && !parameterHintsVisible"
+      },
+      {
+        "command": "hyperjest.clearFileValues",
+        "key": "escape escape",
+        "when": "editorTextFocus && !hyperjest.lineHasInlineValues && hyperjest.fileHasInlineValues && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !findWidgetVisible && !renameInputVisible && !referenceSearchVisible && !inReferenceSearchEditor && !quickFixWidgetVisible && !parameterHintsVisible"
+      }
     ],
     "colors": [
-      { "id": "hyperjest.inlineError.foreground", "description": "Inline failure message text", "defaults": { "light": "#c80000", "dark": "#fe536a", "highContrast": "#ff6b7f", "highContrastLight": "#a00000" } },
-      { "id": "hyperjest.inlineLog.foreground", "description": "Inline console.log text", "defaults": { "light": "#0000ff", "dark": "#569cd6", "highContrast": "#79c0ff", "highContrastLight": "#0000c0" } },
-      { "id": "hyperjest.inlineValue.foreground", "description": "Inline //? live value text", "defaults": { "light": "#7a5d00", "dark": "#d6b33b", "highContrast": "#ffd866", "highContrastLight": "#5a4300" } }
+      {
+        "id": "hyperjest.inlineError.foreground",
+        "description": "Inline failure message text",
+        "defaults": {
+          "light": "#c80000",
+          "dark": "#fe536a",
+          "highContrast": "#ff6b7f",
+          "highContrastLight": "#a00000"
+        }
+      },
+      {
+        "id": "hyperjest.inlineLog.foreground",
+        "description": "Inline console.log text",
+        "defaults": {
+          "light": "#0000ff",
+          "dark": "#569cd6",
+          "highContrast": "#79c0ff",
+          "highContrastLight": "#0000c0"
+        }
+      },
+      {
+        "id": "hyperjest.inlineValue.foreground",
+        "description": "Inline //? live value text",
+        "defaults": {
+          "light": "#7a5d00",
+          "dark": "#d6b33b",
+          "highContrast": "#ffd866",
+          "highContrastLight": "#5a4300"
+        }
+      }
     ],
     "configuration": {
       "title": "HyperJest",
       "properties": {
-        "hyperjest.runMode": { "type": "string", "enum": ["onType", "onSave", "manual"], "default": "onType", "description": "When live test runs are triggered. onType runs affected tests from unsaved buffers after a short pause in typing." },
-        "hyperjest.onTypeDebounceMs": { "type": "number", "default": 300, "description": "Pause in typing before an on-type run starts." },
-        "hyperjest.onSaveDebounceMs": { "type": "number", "default": 100, "description": "Delay after a save before the run starts (coalesces multi-file saves)." },
-        "hyperjest.smartStart": { "type": "string", "enum": ["open", "always", "never"], "default": "always", "description": "Which spec files run automatically: files opened in the editor, all discovered files, or none." },
-        "hyperjest.liveRun.maxTestFilesPerEdit": { "type": "number", "default": 8, "description": "Max spec files re-run for a single edit; the remainder is deferred to on-save priority." },
-        "hyperjest.engine": { "type": "string", "enum": ["auto", "warm", "cli"], "default": "auto", "description": "warm = long-lived in-band Jest workers (fastest); cli = a fresh jest process per run (public API only); auto falls back to cli when a warm hook is unavailable." },
-        "hyperjest.maxWorkers": { "type": "number", "default": 0, "description": "Total worker processes. 0 = max(1, cpus - 1)." },
-        "hyperjest.maxWorkersPerProject": { "type": "number", "default": 4 },
-        "hyperjest.workerMemoryLimitMB": { "type": "number", "default": 2048, "description": "Recycle a worker whose RSS exceeds this after a run." },
-        "hyperjest.memoryBudgetMB": { "type": "number", "default": 0, "description": "Total RSS budget for all workers. 0 = 50% of RAM." },
-        "hyperjest.workerRecycleAfterRuns": { "type": "number", "default": 200 },
-        "hyperjest.workerIdleTimeoutMs": { "type": "number", "default": 600000 },
-        "hyperjest.nodePath": { "type": "string", "default": "", "description": "Node executable for workers. Empty = resolve from .nvmrc/.node-version/engines via fnm/nvm/volta/asdf/n, then PATH." },
-        "hyperjest.nodeArgs": { "type": "array", "items": { "type": "string" }, "default": [] },
-        "hyperjest.env": { "type": "object", "default": {}, "description": "Extra environment variables for worker processes." },
-        "hyperjest.projects": { "type": "array", "default": [], "description": "Per-package overrides: [{ packageDir, configFiles?, configArg?, env?, nodePath?, disabled? }]." },
-        "hyperjest.discovery.exclude": { "type": "array", "items": { "type": "string" }, "default": ["**/node_modules/**", "**/.claude/worktrees/**", "**/dist/**", "**/build/**", "**/coverage/**", "**/ios/**", "**/android/**", "**/Pods/**"] },
-        "hyperjest.discovery.e2ePatterns": { "type": "array", "items": { "type": "string" }, "default": ["**/e2e/**", "**/*.e2e.*"] },
-        "hyperjest.discovery.preferScriptConfigs": { "type": "boolean", "default": true, "description": "Prefer configs referenced by package.json test scripts (jest -c X) over implicit jest.config.* discovery." },
-        "hyperjest.globalSetup": { "type": "string", "enum": ["once", "skip"], "default": "once" },
-        "hyperjest.tsJest.diagnostics": { "type": "string", "enum": ["keep", "off"], "default": "keep" },
-        "hyperjest.coverage.enabled": { "type": "boolean", "default": true },
-        "hyperjest.coverage.perTest": { "type": "boolean", "default": true, "description": "Track which lines each test executed (enables pink error paths and precise affected-test selection)." },
-        "hyperjest.coverage.instrumentTestFiles": { "type": "boolean", "default": false },
-        "hyperjest.affected.useStaticGraph": { "type": "boolean", "default": true },
-        "hyperjest.affected.trackFileLoading": { "type": "boolean", "default": true },
-        "hyperjest.affected.discoverWithJest": { "type": "boolean", "default": true },
-        "hyperjest.affected.alwaysRunFailing": { "type": "boolean", "default": true },
-        "hyperjest.gutter.enabled": { "type": "boolean", "default": true },
-        "hyperjest.gutter.testDeclarations": { "type": "string", "enum": ["auto", "always", "never"], "default": "auto" },
-        "hyperjest.colors.covered": { "type": "string", "default": "#62b455" },
-        "hyperjest.colors.partiallyCovered": { "type": "string", "default": "#d2a032" },
-        "hyperjest.colors.notCovered": { "type": "string", "default": "#cccccc", "description": "Lines not executed by any test (light grey)." },
-        "hyperjest.colors.errorPath": { "type": "string", "default": "#ffa0a0" },
-        "hyperjest.colors.errorSource": { "type": "string", "default": "#fe536a" },
-        "hyperjest.inline.showErrors": { "type": "boolean", "default": true },
-        "hyperjest.inline.showLogs": { "type": "boolean", "default": true },
-        "hyperjest.inline.showValues": { "type": "boolean", "default": true },
-        "hyperjest.inline.maxLength": { "type": "number", "default": 120 },
-        "hyperjest.inline.maxLogsPerLine": { "type": "number", "default": 3 },
-        "hyperjest.liveComments.enabled": { "type": "boolean", "default": true, "description": "Evaluate `expr //?` and `/*?*/` live comments inline." },
-        "hyperjest.liveComments.maxDepth": { "type": "number", "default": 5 },
-        "hyperjest.liveComments.maxStringLength": { "type": "number", "default": 8192 },
-        "hyperjest.console.maxEntriesPerTest": { "type": "number", "default": 100 },
-        "hyperjest.reportFailuresAsProblems": { "type": "boolean", "default": true },
-        "hyperjest.codeLens.enabled": { "type": "boolean", "default": false },
-        "hyperjest.testExplorer.enabled": { "type": "boolean", "default": true },
-        "hyperjest.statusBar.compact": { "type": "boolean", "default": false },
-        "hyperjest.snapshots.updateMode": { "type": "string", "enum": ["new", "none"], "default": "new" },
-        "hyperjest.debug.saveBeforeDebug": { "type": "boolean", "default": true },
-        "hyperjest.debug.console": { "type": "string", "enum": ["integratedTerminal", "internalConsole"], "default": "integratedTerminal" },
-        "hyperjest.runTimeoutMs": { "type": "number", "default": 300000 },
-        "hyperjest.keepRunArtifacts": { "type": "boolean", "default": false },
-        "hyperjest.trace": { "type": "boolean", "default": false }
+        "hyperjest.runMode": {
+          "type": "string",
+          "enum": [
+            "onType",
+            "onSave",
+            "manual"
+          ],
+          "default": "onType",
+          "description": "When live test runs are triggered. onType runs affected tests from unsaved buffers after a short pause in typing."
+        },
+        "hyperjest.onTypeDebounceMs": {
+          "type": "number",
+          "default": 300,
+          "description": "Pause in typing before an on-type run starts."
+        },
+        "hyperjest.onSaveDebounceMs": {
+          "type": "number",
+          "default": 100,
+          "description": "Delay after a save before the run starts (coalesces multi-file saves)."
+        },
+        "hyperjest.smartStart": {
+          "type": "string",
+          "enum": [
+            "open",
+            "always",
+            "never"
+          ],
+          "default": "always",
+          "description": "Which spec files run automatically: files opened in the editor, all discovered files, or none."
+        },
+        "hyperjest.liveRun.maxTestFilesPerEdit": {
+          "type": "number",
+          "default": 8,
+          "description": "Max spec files re-run for a single edit; the remainder is deferred to on-save priority."
+        },
+        "hyperjest.engine": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "warm",
+            "cli"
+          ],
+          "default": "auto",
+          "description": "warm = long-lived in-band Jest workers (fastest); cli = a fresh jest process per run (public API only); auto falls back to cli when a warm hook is unavailable."
+        },
+        "hyperjest.maxWorkers": {
+          "type": "number",
+          "default": 0,
+          "description": "Total worker processes. 0 = max(1, cpus - 1)."
+        },
+        "hyperjest.maxWorkersPerProject": {
+          "type": "number",
+          "default": 4
+        },
+        "hyperjest.workerMemoryLimitMB": {
+          "type": "number",
+          "default": 2048,
+          "description": "Recycle a worker whose RSS exceeds this after a run."
+        },
+        "hyperjest.memoryBudgetMB": {
+          "type": "number",
+          "default": 0,
+          "description": "Total RSS budget for all workers. 0 = 50% of RAM."
+        },
+        "hyperjest.workerRecycleAfterRuns": {
+          "type": "number",
+          "default": 200
+        },
+        "hyperjest.workerIdleTimeoutMs": {
+          "type": "number",
+          "default": 600000
+        },
+        "hyperjest.nodePath": {
+          "type": "string",
+          "default": "",
+          "description": "Node executable for workers. Empty = resolve from .nvmrc/.node-version/engines via fnm/nvm/volta/asdf/n, then PATH."
+        },
+        "hyperjest.nodeArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "hyperjest.env": {
+          "type": "object",
+          "default": {},
+          "description": "Extra environment variables for worker processes."
+        },
+        "hyperjest.projects": {
+          "type": "array",
+          "default": [],
+          "description": "Per-package overrides: [{ packageDir, configFiles?, configArg?, env?, nodePath?, disabled? }]."
+        },
+        "hyperjest.discovery.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.claude/worktrees/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/coverage/**",
+            "**/ios/**",
+            "**/android/**",
+            "**/Pods/**"
+          ]
+        },
+        "hyperjest.discovery.e2ePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/e2e/**",
+            "**/*.e2e.*"
+          ]
+        },
+        "hyperjest.discovery.preferScriptConfigs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prefer configs referenced by package.json test scripts (jest -c X) over implicit jest.config.* discovery."
+        },
+        "hyperjest.globalSetup": {
+          "type": "string",
+          "enum": [
+            "once",
+            "skip"
+          ],
+          "default": "once"
+        },
+        "hyperjest.tsJest.diagnostics": {
+          "type": "string",
+          "enum": [
+            "keep",
+            "off"
+          ],
+          "default": "keep"
+        },
+        "hyperjest.coverage.enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.coverage.perTest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Track which lines each test executed (enables pink error paths and precise affected-test selection)."
+        },
+        "hyperjest.coverage.instrumentTestFiles": {
+          "type": "boolean",
+          "default": false
+        },
+        "hyperjest.affected.useStaticGraph": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.affected.trackFileLoading": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.affected.discoverWithJest": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.affected.alwaysRunFailing": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.gutter.enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.gutter.testDeclarations": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "auto"
+        },
+        "hyperjest.colors.covered": {
+          "type": "string",
+          "default": "#62b455"
+        },
+        "hyperjest.colors.partiallyCovered": {
+          "type": "string",
+          "default": "#d2a032"
+        },
+        "hyperjest.colors.notCovered": {
+          "type": "string",
+          "default": "#cccccc",
+          "description": "Lines not executed by any test (light grey)."
+        },
+        "hyperjest.colors.errorPath": {
+          "type": "string",
+          "default": "#ffa0a0"
+        },
+        "hyperjest.colors.errorSource": {
+          "type": "string",
+          "default": "#fe536a"
+        },
+        "hyperjest.inline.showErrors": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.inline.showLogs": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.inline.showValues": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.inline.maxLength": {
+          "type": "number",
+          "default": 120
+        },
+        "hyperjest.inline.maxLogsPerLine": {
+          "type": "number",
+          "default": 3
+        },
+        "hyperjest.liveComments.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Evaluate `expr //?` and `/*?*/` live comments inline."
+        },
+        "hyperjest.liveComments.maxDepth": {
+          "type": "number",
+          "default": 5
+        },
+        "hyperjest.liveComments.maxStringLength": {
+          "type": "number",
+          "default": 8192
+        },
+        "hyperjest.console.maxEntriesPerTest": {
+          "type": "number",
+          "default": 100
+        },
+        "hyperjest.reportFailuresAsProblems": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.codeLens.enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "hyperjest.testExplorer.enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.statusBar.compact": {
+          "type": "boolean",
+          "default": false
+        },
+        "hyperjest.snapshots.updateMode": {
+          "type": "string",
+          "enum": [
+            "new",
+            "none"
+          ],
+          "default": "new"
+        },
+        "hyperjest.debug.saveBeforeDebug": {
+          "type": "boolean",
+          "default": true
+        },
+        "hyperjest.debug.console": {
+          "type": "string",
+          "enum": [
+            "integratedTerminal",
+            "internalConsole"
+          ],
+          "default": "integratedTerminal"
+        },
+        "hyperjest.runTimeoutMs": {
+          "type": "number",
+          "default": 300000
+        },
+        "hyperjest.keepRunArtifacts": {
+          "type": "boolean",
+          "default": false
+        },
+        "hyperjest.trace": {
+          "type": "boolean",
+          "default": false
+        }
       }
     }
   },
@@ -199,17 +760,20 @@
     "check:no-network": "bash scripts/check-no-network.sh"
   },
   "devDependencies": {
-    "@babel/parser": "7.28.4",
-    "@types/jest": "29.5.14",
-    "@types/node": "24.13.3",
+    "@babel/core": "7.29.7",
+    "@babel/parser": "8.0.7",
+    "@babel/types": "8.0.6",
+    "@types/jest": "30.0.0",
+    "@types/node": "26.6.5",
     "@types/picomatch": "4.0.3",
     "@types/vscode": "1.134.0",
-    "@vscode/vsce": "3.9.2",
+    "@vscode/vsce": "4.0.0",
+    "babel-plugin-jest-hoist": "30.5.0",
     "esbuild": "0.28.2",
     "husky": "9.1.7",
-    "jest": "29.7.0",
+    "jest": "30.5.2",
     "picomatch": "4.0.7",
     "ts-jest": "29.4.14",
-    "typescript": "5.9.3"
+    "typescript": "7.0.2"
   }
 }
