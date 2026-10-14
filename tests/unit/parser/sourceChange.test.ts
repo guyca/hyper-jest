@@ -13,6 +13,43 @@ describe('source function edits', () => {
     expect(changedFunctions(SOURCE, text, meta)).toEqual(new Set());
   });
 
+  it('preserves BigInt constants and defaults while selecting function body edits', () => {
+    const original = 'const limit = 1n;\nfunction a(x = 2n) {\n  return x + limit;\n}\n';
+    const meta = metadata(original);
+    expect(changedFunctions(SOURCE, original.replace('x + limit', 'x * limit'), meta)).toEqual(new Set([0]));
+    expect(changedFunctions(SOURCE, original.replace('1n', '3n'), meta)).toBeNull();
+    expect(changedFunctions(SOURCE, original.replace('2n', '3n'), meta)).toBeNull();
+  });
+
+  it('compares native BigInt AST values without throwing, including with Babel 7 installed', () => {
+    const original = 'const limit = 1n;\nfunction a(x = 2n) {\n  return x + limit;\n}\n';
+    const meta = metadata(original);
+    // Babel 8 returns bigint values; normalize Babel 7 output to exercise the same public API.
+    jest.doMock('@babel/parser', () => {
+      const parser = jest.requireActual('@babel/parser');
+      const nativeBigInts = (value: any): void => {
+        if (!value || typeof value !== 'object') return;
+        if (value.type === 'BigIntLiteral') value.value = BigInt(value.value);
+        Object.values(value).forEach(nativeBigInts);
+      };
+      return { ...parser, parse: (...args: any[]) => {
+        const ast = parser.parse(...args);
+        nativeBigInts(ast);
+        return ast;
+      } };
+    });
+    try {
+      jest.isolateModules(() => {
+        const native = require('../../../src/core/sourceChange') as typeof import('../../../src/core/sourceChange');
+        expect(native.changedFunctions(SOURCE, original.replace('x + limit', 'x * limit'), meta)).toEqual(new Set([0]));
+        expect(native.changedFunctions(SOURCE, original.replace('1n', '3n'), meta)).toBeNull();
+        expect(native.changedFunctions(SOURCE, original.replace('2n', '3n'), meta)).toBeNull();
+      });
+    } finally {
+      jest.dontMock('@babel/parser');
+    }
+  });
+
   it.each([
     ['signature', text.replace('a(x)', 'a(x, y)')],
     ['export', text.replace('{ a, b }', '{ a }')],

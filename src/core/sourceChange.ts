@@ -18,6 +18,8 @@ function syntax(text: string, path: string): Node | undefined {
 /** Ignore positions/formatting and function bodies, keeping all names, signatures and exports. */
 function shape(value: any): any {
   if (Array.isArray(value)) return value.map(shape);
+  // Babel 8 stores BigIntLiteral values as bigint, which JSON.stringify cannot serialize.
+  if (typeof value === 'bigint') return { type: 'bigint', value: value.toString() };
   if (!value || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(value).sort()) {

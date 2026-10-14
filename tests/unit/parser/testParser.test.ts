@@ -262,7 +262,49 @@ describe('parseTestFile: languages and recovery', () => {
     expect(pluginSetsFor('/a/b.ts', '')[0]).toEqual(['typescript', 'decorators-legacy']);
     expect(pluginSetsFor('/a/b.tsx', '')[0]).toEqual(['typescript', 'jsx', 'decorators-legacy']);
     expect(pluginSetsFor('/a/b.js', '')[0]).toEqual(['jsx', 'decorators-legacy']);
-    expect(pluginSetsFor('/a/b.js', '@x')).toContainEqual(['jsx', ['decorators', { decoratorsBeforeExport: false }]]);
+    // Babel 8 removed decorator plugin options; fallback must use the bare plugin name.
+    const jsWithAt = pluginSetsFor('/a/b.js', '@x');
+    expect(jsWithAt).toContainEqual(['jsx', 'decorators']);
+    expect(JSON.stringify(jsWithAt)).not.toContain('decoratorsBeforeExport');
+  });
+
+  it('parses modern and legacy decorators without decoratorsBeforeExport (Babel 8)', () => {
+    const modernBeforeExport = parseTestFile(`
+function Dec() { return () => {}; }
+@Dec()
+export class Suite {
+  @Test()
+  'modern'() {}
+}
+`, '/x/modern-dec.test.ts');
+    expect(modernBeforeExport.parseError).toBeUndefined();
+
+    const modernAfterExport = parseTestFile(`
+function Dec() { return () => {}; }
+export
+@Dec()
+class Suite {
+  @Test()
+  'after-export'() {}
+}
+`, '/x/modern-dec-after.test.ts');
+    expect(modernAfterExport.parseError).toBeUndefined();
+
+    const legacy = parseTestFile(`
+function Dec(target) {}
+@Dec
+class LegacySuite {
+  @Test()
+  'legacy'() {}
+}
+`, '/x/legacy-dec.test.ts');
+    expect(legacy.parseError).toBeUndefined();
+  });
+
+  it('constant-folds BigInt titles and ignores import() callees (Babel 8 AST)', () => {
+    const parsed = parseTestFile(`it(1n, () => {});\nimport('x').then(() => {});\nit('ok', () => {});`, '/x/bigint.test.ts');
+    expect(parsed.parseError).toBeUndefined();
+    expect(parsed.nodes.map(n => n.title)).toEqual(['1', 'ok']);
   });
 
   it('parses TSX, JSX in .js, Flow in .js, and JSX in a .ts file via fallback', () => {

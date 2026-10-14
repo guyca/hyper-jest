@@ -143,6 +143,8 @@ describe('Test Explorer command arguments', () => {
     const t = setup();
     t.runner.docs.lookupAtLine = jest.fn(() => ({ parsed: parsedMathSpec(), line: 3 }));
     await run('hyperjest.updateTestSnapshots', { path: SPEC, line: 9 });
+    // Dynamic imports in command handlers must execute through the CJS test transform.
+    expect(v.window.showErrorMessage).not.toHaveBeenCalled();
     expect(t.runnerCalls).toEqual([['updateSnapshots', { kind: 'selection', selections: [{ path: SPEC, names: [T.addTwo] }] }]]);
 
     t.runnerCalls.length = 0;

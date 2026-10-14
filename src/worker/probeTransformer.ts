@@ -104,7 +104,8 @@ function parserPluginSets(filename: string): unknown[][] {
     const jsx = ext === '.tsx' ? ['jsx'] : [];
     return [
       ['typescript', ...jsx, 'decorators-legacy'],
-      ['typescript', 'jsx', ['decorators', { decoratorsBeforeExport: true }]],
+      // Babel 8: decorator plugin options (e.g. decoratorsBeforeExport) were removed.
+      ['typescript', 'jsx', 'decorators'],
     ];
   }
   return [

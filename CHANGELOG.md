@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Repair compatibility with Jest 30.5.2 (PR #30); guaranteed Jest majors: 28, 29, 30.
+
 ## Unreleased
 
 - Project discovery now uses ordinary Jest resolution and explicit project configuration for custom tooling. Removed vendor-specific integrations and defaults.
