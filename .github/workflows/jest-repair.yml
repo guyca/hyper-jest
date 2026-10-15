@@ -53,7 +53,7 @@ jobs:
           REPAIR_CONFIGURED: ${{ secrets.CURSOR_API_KEY != '' && vars.REPAIR_APP_ID != '' && secrets.REPAIR_APP_PRIVATE_KEY != '' }}
         run: node .github/scripts/jest-automation/repair.mjs inspect
       - if: steps.inspect.outputs.repair == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: repair-context
           path: ${{ runner.temp }}/repair-context.json
@@ -88,7 +88,7 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: repair-context
           path: ${{ github.workspace }}/repair-context
@@ -114,7 +114,7 @@ jobs:
         env:
           PATCH_PATH: ${{ runner.temp }}/agent.patch
         run: node trusted/.github/scripts/jest-automation/repair.mjs export
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jest-agent-patch
           path: ${{ runner.temp }}/agent.patch
@@ -151,7 +151,7 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: jest-agent-patch
           path: ${{ runner.temp }}/patch
@@ -185,7 +185,7 @@ jobs:
         env:
           PATCH_PATH: ${{ runner.temp }}/validated.patch
         run: node trusted/.github/scripts/jest-automation/repair.mjs export
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jest-validated-patch
           path: ${{ runner.temp }}/validated.patch
@@ -223,7 +223,7 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: jest-validated-patch
           path: ${{ runner.temp }}/patch
