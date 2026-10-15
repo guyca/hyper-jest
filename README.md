@@ -5,6 +5,7 @@
     </center>
 </div>
 
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Install-0078D4)](https://marketplace.visualstudio.com/items?itemName=GuyCarmeli.hyperjest)
 ![Test line coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fguyca%2Fhyper-jest%2Fcoverage-badge%2Fcoverage.json)
 
 HyperJest is a VS Code extension that runs your project's own Jest and shows test feedback as you code.
@@ -23,23 +24,24 @@ Find failures where they happen. HyperJest highlights failing assertions and the
 
 ![Highlighted failure path and assertion details with expected and actual values and actions to run, debug, or show the diff](.github/media/failure-details.jpg)
 
-## Install from source
+## Installation
 
-You need Node.js 22 or later, Yarn 4.18.0, VS Code 1.134 or later, and the VS Code `code` command on your PATH. From the repository root:
+Install [HyperJest from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=GuyCarmeli.hyperjest), or search for **HyperJest** by **GuyCarmeli** in VS Code's Extensions view and click **Install**. You need VS Code 1.134 or later and Node.js 22 or later.
+
+You can also install it from the command line if the VS Code `code` command is on your PATH:
 
 ```bash
-yarn install --immutable
-yarn install-extension
+code --install-extension GuyCarmeli.hyperjest
 ```
 
-The last command builds HyperJest and installs the VSIX. In VS Code, run **Developer: Reload Window**. Open a project with Jest installed in its package; HyperJest discovers its Jest configuration and starts eligible tests automatically. Use **HyperJest: Select Configurations** if you have multiple packages or configurations.
+Open a project with Jest installed in its package; HyperJest discovers its Jest configuration and starts eligible tests automatically. Use **HyperJest: Select Configurations** if you have multiple packages or configurations.
 
-For configuration options, see [Configuration](docs/configuration.md). For build and troubleshooting commands, see the [maintainer guide](CLAUDE.md).
+For configuration options, see [Configuration](docs/configuration.md). For building from source and troubleshooting commands, see the [maintainer guide](CLAUDE.md).
 
 ## Jest compatibility
 
-HyperJest guarantees the latest three stable Jest majors, currently **28, 29, and 30**. CI exercises pinned versions of each major and every proposed Jest dependency update through both the warm worker and CLI engines. Older versions may continue to work but are outside the tested guarantee. Prereleases are not included.
+HyperJest supports **Jest 28, 29, and 30**, using the Jest version installed in your project. CI tests a pinned version of each major.
 
-The versions used by CI are recorded in [the compatibility policy](scripts/jest-compatibility.json). For the automatic Dependabot repair and release process, see [release automation](docs/release-automation.md).
+Older versions may work but aren't officially supported. Jest prereleases aren't supported. See the [compatibility policy](scripts/jest-compatibility.json) for the exact versions tested.
 
 HyperJest is released under the [MIT license](LICENSE.md).
