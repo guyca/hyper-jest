@@ -26,7 +26,7 @@ Find failures where they happen. HyperJest highlights failing assertions and the
 
 ## Installation
 
-Install [HyperJest from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=GuyCarmeli.hyperjest), or search for **HyperJest** by **GuyCarmeli** in VS Code's Extensions view and click **Install**. You need VS Code 1.134 or later and Node.js 22 or later.
+Install [HyperJest from the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=GuyCarmeli.hyperjest).
 
 You can also install it from the command line if the VS Code `code` command is on your PATH:
 
