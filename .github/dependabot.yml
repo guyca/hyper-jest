@@ -9,6 +9,8 @@ updates:
       time: "09:00"
       timezone: Asia/Jerusalem
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 14
     versioning-strategy: increase
     exclude-paths:
       - "tests/fixtures/**"
@@ -45,6 +47,8 @@ updates:
       time: "09:00"
       timezone: Asia/Jerusalem
     open-pull-requests-limit: 1
+    cooldown:
+      default-days: 14
     groups:
       github-actions:
         patterns: ["*"]
