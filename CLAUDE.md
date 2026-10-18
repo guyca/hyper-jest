@@ -26,8 +26,11 @@ Test Explorer.
   Dependencies are exact-pinned in `package.json`; commit `yarn.lock` for reproducible installs.
 - `.yarnrc.yml`: `nodeLinker: node-modules`, `npmRegistryServer: https://registry.npmjs.org`,
   `defaultSemverRangePrefix: ""`, `enableScripts: false`,
-  `enableTelemetry: false`. esbuild's binary comes from the optional `@esbuild/darwin-arm64` package;
-  keytar's network postinstall never runs.
+  `enableTelemetry: false`, `npmMinimalAgeGate: 14d`. esbuild's binary comes from the optional
+  `@esbuild/darwin-arm64` package; keytar's network postinstall never runs.
+- New dependency versions must be at least 14 days old: Yarn's `npmMinimalAgeGate` skips younger versions
+  when it resolves, and Dependabot's `cooldown` delays its version updates by the same 14 days. The gate does not
+  re-check versions already in `yarn.lock`.
 - Fresh dependency installs use the public npm registry.
 
 ## Commands
@@ -86,7 +89,8 @@ Host forks `dist/worker/hyperjestWorker.cjs` with the project's node, `cwd = pac
 
 ## Adding or updating a dependency
 
-1. Online: `yarn add --dev <pkg>@<exact>` (new versions are saved without a range prefix).
+1. Online: `yarn add --dev <pkg>@<exact>` (new versions are saved without a range prefix). Versions published
+   less than 14 days ago are rejected by the age gate; wait rather than passing `--no-time-gate`.
 2. Run `yarn build && yarn test`. 3. Commit `package.json` + `yarn.lock`.
 The pre-commit hook sanitizes staged lockfile changes; run `yarn sanitize:lockfile` manually before
 verifying an immutable install. CI rejects lockfiles containing registry-specific `__archiveUrl` entries.
