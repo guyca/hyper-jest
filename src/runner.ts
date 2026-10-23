@@ -998,13 +998,18 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
         break;
       }
       case 'discover': {
-        if (watched.length) handle = dispatch(watched, 'continuous');
-        if (!s.affected.discoverWithJest) break;
+        if (!s.affected.discoverWithJest) {
+          if (watched.length) handle = dispatch(watched, 'continuous');
+          break;
+        }
         const files = await findRelatedTests(entry.spec, [p], `related-${Date.now().toString(36)}`, s.env, this.log);
         if (!isCurrent()) return undefined;
+        const cap = s.liveRun.maxTestFilesPerEdit > 0 ? s.liveRun.maxTestFilesPerEdit : files.length;
+        // One handle covers both selections, including slow matcher lookups. Replacing a separate
+        // watch handle would let the live batch finish early and discard its unfinished enqueue.
+        const runs = [...watched, ...files.slice(0, cap).map(f => ({ path: f, projectId }))];
+        if (runs.length) handle = dispatch(runs, files.length ? runReason : 'continuous');
         if (files.length) {
-          const cap = s.liveRun.maxTestFilesPerEdit > 0 ? s.liveRun.maxTestFilesPerEdit : files.length;
-          handle = dispatch(files.slice(0, cap).map(f => ({ path: f, projectId })), runReason);
           for (const f of files.slice(0, cap)) this.deferred.delete(`${projectId}\0${f}`);
           for (const f of files.slice(cap)) this.deferred.set(`${projectId}\0${f}`, { path: f, projectId });
         }

@@ -248,6 +248,48 @@ describe('RunCoordinator live scheduling', () => {
     runner.dispose(); store.dispose();
   });
 
+  it('keeps continuous selections when related-test discovery finishes before their matcher lookup', async () => {
+    const { runner, store, w1, registry, complete } = setup();
+    await runner.start();
+    runner.watch([{ path: A }], { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) });
+    await advance();
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    let resolve!: () => void;
+    registry.resolveMatchers.mockImplementationOnce(() => new Promise(r => { resolve = () => r({}); }));
+    const related = '/repo/pkg/related.test.js';
+    (cliEngine.findRelatedTests as jest.Mock).mockResolvedValueOnce([related]);
+    const doc = edit(SRC, 'export const x = 1;');
+    await advance(500);
+    resolve();
+    await advance();
+    expect(w1.runs().slice(1).flatMap(r => r.tests.map(t => t.path)).sort()).toEqual([A, related].sort());
+    for (const run of w1.runs().slice(1)) complete(w1, run.runId);
+    await advance();
+    fire('save', doc);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(3);
+    runner.dispose(); store.dispose();
+  });
+
+  it.each([{ related: [] }, { related: [A] }])('keeps the watch and merges overlaps when discovery returns $related', async ({ related }) => {
+    const { runner, store, w1, complete } = setup();
+    await runner.start();
+    runner.watch([{ path: A, names: ['x'] }], { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) });
+    await advance();
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    (cliEngine.findRelatedTests as jest.Mock).mockResolvedValueOnce(related);
+    edit(SRC, 'export const x = 1;');
+    await advance(500);
+    expect(w1.runs()).toHaveLength(2);
+    expect(w1.runs()[1].tests).toEqual(related.length ? [{ path: A }] : [{ path: A, names: ['x'] }]);
+    complete(w1, w1.runs()[1].runId);
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(2);
+    runner.dispose(); store.dispose();
+  });
+
   it('merges overlapping affected selections from multiple edited files in a project', async () => {
     const { runner, store, w1, workerMsg, complete } = setup();
     await runner.start();
