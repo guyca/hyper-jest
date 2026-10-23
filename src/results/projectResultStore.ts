@@ -323,6 +323,10 @@ export class ProjectResultStore {
   // ------------------------------------------------------------------------------------------
 
   fileRecord(path: string): FileRecord | undefined { return this.files.get(path); }
+  /** Actual display contributions; copied parses and edit markers do not establish ownership. */
+  hasResultsFor(path: string): boolean {
+    return this.files.has(path) || this.coverage.has(path) || this.inline.has(path);
+  }
   test(testKey: string): TestRecord | undefined { return this.tests.get(testKey); }
   parsed(path: string): ParsedFile | undefined { return this.parsedFiles.get(path); }
   coverageFor(path: string): FileCoverage | undefined {

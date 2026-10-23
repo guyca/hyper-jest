@@ -92,7 +92,15 @@ export class ResultStore {
     for (const store of this.stores()) { const s = store.summary(); for (const k of Object.keys(out) as Array<keyof RunSummary>) out[k] += s[k]; }
     return out;
   }
-  staleInfo(p: string): StaleInfo | undefined { return this.stores().map(s => s.staleInfo(p)).filter((x): x is StaleInfo => !!x).sort((a, b) => b.at - a.at)[0]; }
+  staleInfo(p: string): StaleInfo | undefined {
+    const stores = this.stores();
+    const contributors = stores.filter(s => s.hasResultsFor(p));
+    // Edit markers are broadcast (and replayed into new partitions), but unrelated configs never
+    // run this file and cannot clear theirs. Only contributors can keep displayed results stale.
+    // Before the first result, retain edit markers so in-flight work still tracks buffer changes.
+    return (contributors.length ? contributors : stores).map(s => s.staleInfo(p))
+      .filter((x): x is StaleInfo => !!x).sort((a, b) => b.at - a.at)[0];
+  }
   lastRun(p: string, projectId?: string): LastRunInfo | undefined { return this.stores(projectId).map(s => s.lastRun(p)).filter((x): x is LastRunInfo => !!x).sort((a, b) => b.at - a.at)[0]; }
   dataStartedAt(p: string): number | undefined {
     const times = this.stores().map(s => s.dataStartedAt(p)).filter((n): n is number => n !== undefined);
