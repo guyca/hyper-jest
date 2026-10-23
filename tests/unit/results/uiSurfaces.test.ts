@@ -224,7 +224,7 @@ describe('status bar', () => {
     expect(buildStatusBarModel({ summary, state, compact: true }).text).toBe('$(beaker) $(check-all) 6 $(error) 1');
     expect(buildStatusBarModel({ summary: { ...summary, running: 1 }, state, compact: false })).toMatchObject({ text: expect.stringContaining('$(loading~spin)'), error: false });
     expect(buildStatusBarModel({ summary: { ...summary, failed: 0 }, state: { ...state, paused: true }, compact: false })).toMatchObject({ text: expect.stringContaining('$(debug-pause)'), warning: true });
-    expect(buildStatusBarModel({ summary, state: { ...state, capped: { count: 12, selections: [] } }, compact: false }).text).toContain('12 affected tests — click to run');
+    expect(buildStatusBarModel({ summary, state: { ...state, capped: { count: 12, selections: [] } }, compact: false }).text).toContain('12 affected files waiting');
     expect(buildStatusBarModel({ summary, state: { ...state, started: false }, compact: false }).text).toBe('$(beaker) HyperJest stopped');
     expect(buildStatusBarModel({ summary, state, compact: false }).tooltip).toContain('Run mode: onType');
   });

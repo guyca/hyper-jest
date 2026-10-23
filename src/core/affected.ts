@@ -11,7 +11,7 @@
  *  - `.snap` edit → the owning test file. Toolchain files → `invalidateConfig`.
  *  - Nothing selected: `none` when a static graph exists (no tests cover the file), otherwise
  *    `discover` so the host can fall back to `jest --listTests --findRelatedTests`.
- *  - Cap: the first `maxTestFilesPerEdit` files run now, the rest are `deferred` (on-save priority).
+ *  - Cap: the first `maxTestFilesPerEdit` files run now, the rest are `deferred` to later idle batches.
  */
 import { parseTestKey, type RunTestSelection } from './protocol';
 import type { ChangeAnalysis } from './changeAnalyzer';
@@ -202,7 +202,7 @@ function selectForSourceFile(input: AffectedInput): AffectedResult {
 
   if (acc.size === 0) {
     const name = baseName(file);
-    if (!graphConsulted && input.loadedBy.size === 0 && input.execBy.size === 0) {
+    if (!graphConsulted && !input.loadedBy.get(file)?.size && !input.execBy.get(file)?.size) {
       return { kind: 'discover', reason: `no runtime or static dependency data yet for ${name}` };
     }
     return { kind: 'none', reason: `no tests cover ${name}` };

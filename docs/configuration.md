@@ -1,5 +1,22 @@
 # Configuration
 
+## Live runs
+
+By default, HyperJest runs affected tests from unsaved buffers after **500 ms without typing**.
+Each edit resets the project's timer. Saving triggers a run after 100 ms, unless the same text
+is already being tested or has completed. Configure these delays with `hyperjest.onTypeDebounceMs`
+and `hyperjest.onSaveDebounceMs`.
+
+Edits made while tests run accumulate into one pending batch per project. The current run finishes,
+then HyperJest selects tests for the latest code once typing has settled. Changes to several files
+merge overlapping test selections. `hyperjest.liveRun.maxTestFilesPerEdit` limits each batch
+(default 8; 0 means unlimited); remaining affected files continue automatically at idle.
+
+Hollow gutter squares mean the displayed results predate an edit. Results from an older run stay
+stale until a subsequent run refreshes them. Use `hyperjest.runMode: "onSave"` to run only after
+saving, or `"manual"` to disable automatic runs. Pausing retains pending changes for Resume;
+stopping or cancelling all runs discards pending work.
+
 ## Affected test selection
 
 Source-function body edits rerun only the tests that executed those functions when reliable per-test

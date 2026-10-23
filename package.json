@@ -462,7 +462,7 @@
         },
         "hyperjest.onTypeDebounceMs": {
           "type": "number",
-          "default": 300,
+          "default": 500,
           "description": "Pause in typing before an on-type run starts."
         },
         "hyperjest.onSaveDebounceMs": {
@@ -483,7 +483,7 @@
         "hyperjest.liveRun.maxTestFilesPerEdit": {
           "type": "number",
           "default": 8,
-          "description": "Max spec files re-run for a single edit; the remainder is deferred to on-save priority."
+          "description": "Max spec files per live run batch; remaining affected files run automatically after current work finishes. Use 0 for no limit."
         },
         "hyperjest.engine": {
           "type": "string",

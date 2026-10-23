@@ -68,6 +68,7 @@ interface PendingRun {
   path: string;
   projectId: string;
   startedAt: number;
+  editRevision: number;
   filtered: boolean;
   names: Set<string>;
   prevStatus: FileRecord['status'];
@@ -118,11 +119,12 @@ export class ProjectResultStore {
   private readonly inline = new Map<string, Map<number, OwnedEntry[]>>();
   /** owner test file -> files holding inline entries it produced. */
   private readonly entryFiles = new Map<string, Set<string>>();
-  private readonly staleMap = new Map<string, StaleInfo>();
+  private editRevision = 0;
+  private readonly staleMap = new Map<string, StaleInfo & { editRevision: number }>();
   private readonly runRegistrations = new Map<string, Map<string, RunTestSelection>>();
   private readonly pending = new Map<string, PendingRun>();
   private readonly startedTests = new Map<string, Map<string, StartedTest>>();
-  private readonly lastRuns = new Map<string, LastRunInfo>();
+  private readonly lastRuns = new Map<string, LastRunInfo & { editRevision: number }>();
   /** path -> start time of the newest committed run whose data (coverage, loads, entries, results) touched it. */
   private readonly dataStarts = new Map<string, number>();
   /** path -> status the file had before markQueued (restored by unmarkQueued). */
@@ -205,8 +207,9 @@ export class ProjectResultStore {
    */
   markStale(path: string, changedLines?: Iterable<number>): void {
     const existing = this.staleMap.get(path);
-    const info: StaleInfo = existing ?? { all: false, lines: new Set(), at: this.now() };
+    const info = existing ?? { all: false, lines: new Set<number>(), at: this.now(), editRevision: 0 };
     info.at = this.now();
+    info.editRevision = ++this.editRevision;
     // Only a change of what is drawn notifies: every keystroke re-applying the decorations would
     // throw away the editor's own range tracking of the lines being edited.
     let changed = !existing;
@@ -475,7 +478,7 @@ export class ProjectResultStore {
       invocations: m.invocations,
       lastRunId: m.runId,
       updatedAt: this.now(),
-      stale: false,
+      stale: this.staleMap.has(m.path),
     };
     this.tests.set(key, record);
     file.testKeys.add(key);
@@ -523,7 +526,7 @@ export class ProjectResultStore {
       for (const src of m.files) {
         addTo(this.loadedByMap, src, m.path);
         addTo(this.fileLoads, m.path, src);
-        this.clearSatisfiedStale(src, this.lastRuns.get(m.path)!.startedAt);
+        this.clearSatisfiedStale(src, this.lastRuns.get(m.path)!);
         this.touch(src);
       }
       return;
@@ -542,7 +545,7 @@ export class ProjectResultStore {
       for (const h of hits) {
         addTo(this.fileSources, m.path, h.path);
         this.projectCoverage(h.path);
-        this.clearSatisfiedStale(h.path, this.lastRuns.get(m.path)!.startedAt);
+        this.clearSatisfiedStale(h.path, this.lastRuns.get(m.path)!);
         this.touch(h.path);
       }
       return;
@@ -632,24 +635,24 @@ export class ProjectResultStore {
     }
 
     // Stale markers set before this run started are now satisfied.
-    for (const path of touched) { this.projectCoverage(path); this.clearSatisfiedStale(path, p.startedAt); }
+    for (const path of touched) { this.projectCoverage(path); this.clearSatisfiedStale(path, p); }
     file.stale = this.staleMap.has(m.path);
     for (const key of p.seenTests) {
       const t = this.tests.get(key);
       if (t && !p.keptTests.has(key)) t.stale = file.stale;
     }
 
-    this.lastRuns.set(m.path, { runId: m.runId, filtered: p.filtered, names: p.filtered ? [...p.names] : undefined, at: this.now(), startedAt: p.startedAt });
+    this.lastRuns.set(m.path, { runId: m.runId, filtered: p.filtered, names: p.filtered ? [...p.names] : undefined, at: this.now(), startedAt: p.startedAt, editRevision: p.editRevision });
     this.startedTests.delete(m.path);
     this.pending.delete(pendingKey(m.runId, m.path));
     for (const s of touched) this.touch(s);
   }
 
   /** Records that a run started at `startedAt` refreshed `path`'s data; drops a stale mark set before it. */
-  private clearSatisfiedStale(path: string, startedAt: number): void {
+  private clearSatisfiedStale(path: string, { startedAt, editRevision }: Pick<PendingRun, 'startedAt' | 'editRevision'>): void {
     if (startedAt > (this.dataStarts.get(path) ?? -Infinity)) this.dataStarts.set(path, startedAt);
     const st = this.staleMap.get(path);
-    if (st && st.at <= startedAt) {
+    if (st && st.at <= startedAt && st.editRevision <= editRevision) {
       this.staleMap.delete(path);
       const f = this.files.get(path);
       if (f) f.stale = false;
@@ -836,7 +839,7 @@ export class ProjectResultStore {
       const filterNames = names ?? reg?.names;
       const file = this.files.get(path);
       p = {
-        runId, path, projectId, startedAt: this.now(),
+        runId, path, projectId, startedAt: this.now(), editRevision: this.editRevision,
         filtered: !!filterNames && filterNames.length > 0,
         names: new Set(filterNames ?? []),
         prevStatus: file?.status ?? 'unknown',

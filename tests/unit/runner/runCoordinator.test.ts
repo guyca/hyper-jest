@@ -151,7 +151,7 @@ describe('RunCoordinator run groups', () => {
     expect(await peek(second.done)).toEqual({ wasInterrupted: false, error: undefined });
   });
 
-  it('a superseding on-type run carries the selection and the groups of the run it cancels', async () => {
+  it('automatic requests merge into one pending rerun without cancelling the active run', async () => {
     const { runner, store, worker, complete } = setup();
     await runner.start();
     const first = await runner.runFiles([{ path: A, names: ['x'] }], 'onType');
@@ -159,16 +159,17 @@ describe('RunCoordinator run groups', () => {
     expect(worker.runs()).toHaveLength(1);
     const r1 = worker.runs()[0].runId;
     const second = await runner.runFiles([{ path: A, names: ['y'] }], 'onType');
-    expect(worker.sent.some(m => m.type === 'cancel' && m.runId === r1)).toBe(true);
-    complete(r1, true);
+    const third = await runner.runFiles([{ path: A, names: ['z'] }], 'onType');
+    expect(worker.sent.some(m => m.type === 'cancel')).toBe(false);
+    complete(r1);
     await tick();
     expect(worker.runs()).toHaveLength(2);
-    expect(worker.runs()[1].tests).toEqual([{ path: A, names: ['x', 'y'] }]);
-    expect(await peek(first.done)).toBe('pending');
-    // The aborted run must not leave the still-queued file looking idle.
+    expect(worker.runs()[1].tests).toEqual([{ path: A, names: ['y', 'z'] }]);
+    expect(await peek(first.done)).toEqual({ wasInterrupted: false, error: undefined });
     complete(worker.runs()[1].runId);
     expect(await peek(first.done)).toEqual({ wasInterrupted: false, error: undefined });
     expect(await peek(second.done)).toEqual({ wasInterrupted: false, error: undefined });
+    expect(await peek(third.done)).toEqual({ wasInterrupted: false, error: undefined });
     expect(store.summary().queued).toBe(0);
   });
 

@@ -254,6 +254,24 @@ describe('ResultStore', () => {
     expect(store.staleInfo(SRC)).toBeUndefined();
   });
 
+  it('keeps results stale when an edit arrives in the same millisecond as run start', () => {
+    const store = new ResultStore({ now: () => 1000 });
+    applyFullRun(store, 'r1');
+    store.apply(fileStart('r2'), PROJECT);
+    store.markStale(SRC);
+    store.markStale(SPEC);
+    store.apply(testResult('r2', T.addTwo, 'passed'), PROJECT);
+    expect(store.test(key(T.addTwo))!.stale).toBe(true);
+    store.apply(fileCoverage('r2', [0], []), PROJECT);
+    store.apply(fileResult('r2', 'passed'), PROJECT);
+    expect(store.staleInfo(SRC)).toBeDefined();
+    expect(store.fileRecord(SPEC)!.stale).toBe(true);
+    applyFullRun(store, 'r3');
+    expect(store.staleInfo(SRC)).toBeUndefined();
+    expect(store.fileRecord(SPEC)!.stale).toBe(false);
+    store.dispose();
+  });
+
   it('commits fileCoverage and fileLoad that arrive after fileResult (CLI reporter order)', () => {
     const { store } = makeStore();
     store.markStale(SRC);
