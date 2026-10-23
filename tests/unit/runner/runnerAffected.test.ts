@@ -115,6 +115,313 @@ function setup(overrides: Partial<HyperJestSettings> = {}) {
 const tick = async (n = 4) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+describe('RunCoordinator live scheduling', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); jest.clearAllMocks(); });
+  const advance = (ms = 0) => jest.advanceTimersByTimeAsync(ms);
+  const edit = (path: string, text: string) => {
+    const doc = makeDocument(path, text);
+    Object.assign(doc, { isDirty: true });
+    const index = __state.textDocuments.findIndex(d => d.uri.fsPath === path);
+    if (index < 0) __state.textDocuments.push(doc); else __state.textDocuments[index] = doc;
+    fire('change', { document: doc, contentChanges: [{}] });
+    return doc;
+  };
+
+  it('runs once after 500 ms idle using the latest unsaved edit', async () => {
+    const { runner, store, w1 } = setup();
+    await runner.start();
+    store.forProject(P1);
+    edit(A, TEXT);
+    expect(store.staleInfo(A)).toBeDefined();
+    await advance(300);
+    expect(w1.runs()).toHaveLength(0);
+    edit(A, TEXT.replace('1', '2'));
+    await advance(499);
+    expect(w1.runs()).toHaveLength(0);
+    await advance(1);
+    expect(w1.runs()).toHaveLength(1);
+    expect(runner.overlay.entriesFor(P1)[0].text).toContain('expect(2)');
+    runner.dispose(); store.dispose();
+  });
+
+  it('lets a slow run finish and coalesces all edits into one latest rerun', async () => {
+    const { runner, store, w1, complete } = setup();
+    await runner.start();
+    edit(A, TEXT);
+    await advance(500);
+    for (const value of ['2', '3', '4']) {
+      edit(A, TEXT.replace('1', value));
+      await advance(500);
+    }
+    expect(w1.runs()).toHaveLength(1);
+    expect(w1.sent.filter(m => m.type === 'cancel')).toHaveLength(0);
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    expect(w1.runs()).toHaveLength(2);
+    expect(runner.overlay.entriesFor(P1)[0].text).toContain('expect(4)');
+    complete(w1, w1.runs()[1].runId);
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(2);
+    runner.dispose(); store.dispose();
+  });
+
+  it('waits for typing to settle even if the previous run finishes first', async () => {
+    const { runner, store, w1, complete } = setup();
+    await runner.start();
+    edit(A, TEXT);
+    await advance(500);
+    edit(A, TEXT.replace('1', '2'));
+    complete(w1, w1.runs()[0].runId);
+    await advance(499);
+    expect(w1.runs()).toHaveLength(1);
+    await advance(1);
+    expect(w1.runs()).toHaveLength(2);
+    runner.dispose(); store.dispose();
+  });
+
+  it('coalesces saves and cancels an older saved-text timer when typing resumes', async () => {
+    const { runner, store, w1, complete } = setup({ onSaveDebounceMs: 100 });
+    await runner.start();
+    const doc = edit(A, TEXT);
+    fire('save', doc);
+    await advance(50);
+    edit(A, TEXT.replace('1', '2'));
+    await advance(100);
+    expect(w1.runs()).toHaveLength(0);
+    const latest = __state.textDocuments[0];
+    fire('save', latest);
+    fire('save', latest);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(1);
+    fire('save', latest);
+    complete(w1, w1.runs()[0].runId);
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
+  it('saving one file does not shorten a sibling buffer\'s typing debounce', async () => {
+    const { runner, store, w1, workerMsg } = setup({ onSaveDebounceMs: 100 });
+    await runner.start();
+    const other = '/repo/pkg/src/other.js';
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC, other] }, testFiles: [A], unresolved: 0 } as any);
+    const saved = edit(SRC, 'export const x = 1;');
+    await advance(100);
+    edit(other, 'export const y = 2;');
+    await advance(100);
+    fire('save', saved);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(0);
+    await advance(299);
+    expect(w1.runs()).toHaveLength(0);
+    await advance(1);
+    expect(w1.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
+  it('cancels pending timers on stop so restart does not run an old edit', async () => {
+    const { runner, store, w1 } = setup();
+    await runner.start();
+    edit(A, TEXT);
+    runner.stop();
+    await runner.start();
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+
+  it('does not dispatch obsolete selections after asynchronous dependency discovery', async () => {
+    const { runner, store, w1 } = setup();
+    let resolve!: (files: string[]) => void;
+    (cliEngine.findRelatedTests as jest.Mock).mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+    await runner.start();
+    edit(SRC, 'export const x = 1;');
+    await advance(500);
+    edit(SRC, 'export const x = 2;');
+    resolve([A]);
+    await advance();
+    expect(w1.runs()).toHaveLength(0);
+    (cliEngine.findRelatedTests as jest.Mock).mockResolvedValueOnce([A]);
+    await advance(500);
+    expect(w1.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
+  it('keeps continuous selections when related-test discovery finishes before their matcher lookup', async () => {
+    const { runner, store, w1, registry, complete } = setup();
+    await runner.start();
+    runner.watch([{ path: A }], { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) });
+    await advance();
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    let resolve!: () => void;
+    registry.resolveMatchers.mockImplementationOnce(() => new Promise(r => { resolve = () => r({}); }));
+    const related = '/repo/pkg/related.test.js';
+    (cliEngine.findRelatedTests as jest.Mock).mockResolvedValueOnce([related]);
+    const doc = edit(SRC, 'export const x = 1;');
+    await advance(500);
+    resolve();
+    await advance();
+    expect(w1.runs().slice(1).flatMap(r => r.tests.map(t => t.path)).sort()).toEqual([A, related].sort());
+    for (const run of w1.runs().slice(1)) complete(w1, run.runId);
+    await advance();
+    fire('save', doc);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(3);
+    runner.dispose(); store.dispose();
+  });
+
+  it.each([{ related: [] }, { related: [A] }])('keeps the watch and merges overlaps when discovery returns $related', async ({ related }) => {
+    const { runner, store, w1, complete } = setup();
+    await runner.start();
+    runner.watch([{ path: A, names: ['x'] }], { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) });
+    await advance();
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    (cliEngine.findRelatedTests as jest.Mock).mockResolvedValueOnce(related);
+    edit(SRC, 'export const x = 1;');
+    await advance(500);
+    expect(w1.runs()).toHaveLength(2);
+    expect(w1.runs()[1].tests).toEqual(related.length ? [{ path: A }] : [{ path: A, names: ['x'] }]);
+    complete(w1, w1.runs()[1].runId);
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(2);
+    runner.dispose(); store.dispose();
+  });
+
+  it('merges overlapping affected selections from multiple edited files in a project', async () => {
+    const { runner, store, w1, workerMsg, complete } = setup();
+    await runner.start();
+    const other = '/repo/pkg/src/other.js';
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC, other] }, testFiles: [A], unresolved: 0 } as any);
+    edit(SRC, 'export const x = 1;');
+    await advance(300);
+    edit(other, 'export const y = 2;');
+    await advance(499);
+    expect(w1.runs()).toHaveLength(0);
+    await advance(1);
+    expect(w1.runs()).toHaveLength(1);
+    complete(w1, w1.runs()[0].runId);
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
+  it('automatically drains affected files beyond the live cap after the first batch', async () => {
+    const { runner, store, w1, workerMsg, complete } = setup({ liveRun: { maxTestFilesPerEdit: 1 } });
+    await runner.start();
+    const b = '/repo/pkg/b.test.js';
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC], [b]: [SRC] }, testFiles: [A, b], unresolved: 0 } as any);
+    edit(SRC, 'export const x = 1;');
+    await advance(500);
+    expect(w1.runs()).toHaveLength(1);
+    expect(runner.getState().capped?.count).toBe(1);
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    expect(w1.runs()).toHaveLength(2);
+    expect(w1.runs()[1].tests).toEqual([{ path: b }]);
+    expect(runner.getState().capped).toBeUndefined();
+    runner.dispose(); store.dispose();
+  });
+
+  it('reserves a deferred batch while asynchronous matcher resolution is pending', async () => {
+    const { runner, store, w1, w2, registry, workerMsg, complete } = setup({ liveRun: { maxTestFilesPerEdit: 1 } });
+    await runner.start();
+    const b = '/repo/pkg/b.test.js', c = '/repo/pkg/c.test.js';
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC], [b]: [SRC], [c]: [SRC] }, testFiles: [A, b, c], unresolved: 0 } as any);
+    edit(SRC, 'export const x = 1;');
+    await advance(500);
+    await runner.runFiles([{ path: C }], 'explicit');
+    await advance();
+    let resolve!: () => void;
+    registry.resolveMatchers.mockImplementationOnce(() => new Promise(r => { resolve = () => r({}); }));
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    expect(runner.getState().capped?.count).toBe(1);
+    // Completing another project pumps the queue while b is still resolving its matchers.
+    complete(w2, w2.runs()[0].runId);
+    await advance();
+    expect(runner.getState().capped?.count).toBe(1);
+    expect(w1.runs()).toHaveLength(1);
+    resolve();
+    await advance();
+    expect(w1.runs()).toHaveLength(2);
+    expect(w1.runs()[1].tests).toEqual([{ path: b }]);
+    complete(w1, w1.runs()[1].runId);
+    await advance();
+    expect(w1.runs()).toHaveLength(3);
+    expect(w1.runs()[2].tests).toEqual([{ path: c }]);
+    runner.dispose(); store.dispose();
+  });
+
+  it('retains pending edits while paused and runs the latest text on resume', async () => {
+    const { runner, store, w1 } = setup();
+    await runner.start();
+    runner.pause();
+    edit(A, TEXT);
+    await advance(500);
+    edit(A, TEXT.replace('1', '2'));
+    await advance(500);
+    expect(w1.runs()).toHaveLength(0);
+    runner.resume();
+    await advance();
+    expect(w1.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
+  it.each(['manual', 'onSave'] as const)('respects %s mode', async runMode => {
+    const { runner, store, w1 } = setup({ runMode });
+    await runner.start();
+    const doc = edit(A, TEXT);
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(0);
+    fire('save', doc);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(runMode === 'manual' ? 0 : 1);
+    runner.dispose(); store.dispose();
+  });
+
+  it('does not let a busy project delay live tests in another project', async () => {
+    const { runner, store, w1, w2 } = setup();
+    await runner.start();
+    await runner.runFiles([{ path: A }], 'explicit');
+    await advance();
+    edit(A, TEXT);
+    edit(C, TEXT);
+    await advance(500);
+    expect(w1.runs()).toHaveLength(1);
+    expect(w2.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
+  it.each(['manual', 'onSave'] as const)('discards an unsaved on-type batch when switched to %s', async mode => {
+    const { runner, store, w1, settings } = setup();
+    await runner.start();
+    edit(A, TEXT);
+    settings.runMode = mode;
+    await advance(500);
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+
+  it('does not resurrect work cancelled while resolving matchers', async () => {
+    const { runner, store, w1, registry } = setup();
+    let resolve!: () => void;
+    registry.resolveMatchers.mockImplementationOnce(() => new Promise(r => { resolve = () => r({}); }));
+    await runner.start();
+    const pending = runner.runFiles([{ path: A }], 'onSave');
+    runner.stop();
+    await runner.start();
+    resolve();
+    const handle = await pending;
+    expect(await handle.done).toMatchObject({ wasInterrupted: true });
+    await advance();
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+});
+
 describe('RunCoordinator affected selection', () => {
   afterEach(() => jest.clearAllMocks());
 

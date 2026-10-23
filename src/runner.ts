@@ -66,6 +66,11 @@ interface ActiveRun {
   finish: (interrupted: boolean, error?: string) => void;
 }
 
+interface LiveBatch {
+  revision: number;
+  changes: Map<string, { document: vscode.TextDocument; reason: 'onType' | 'onSave'; readyAt: number }>;
+}
+
 let seq = 0;
 let groupSeq = 0;
 
@@ -80,10 +85,15 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   private readonly graphRequested = new Map<string, WorkerHandle>();
   /** watch id -> projectId -> selections of a continuous run. */
   private readonly continuous = new Map<string, Map<string, RunTestSelection[]>>();
-  /** On-type affected runs per edited file: the text they ran for, so a save of that same text does not re-run. */
-  private readonly onTypeRuns = new Map<string, { text: string; outcome?: RunOutcome; done: Promise<RunOutcome> | undefined }>();
+  /** Automatic affected runs per edited file: the text they ran for, so saving that same text does not re-run. */
+  private readonly liveRuns = new Map<string, { text: string; outcome?: RunOutcome; done: Promise<RunOutcome> | undefined }>();
   private readonly deferred = new Map<string, RunTestSelection>();  // path -> selection (capped on-type runs)
   private readonly changeTimers = new Map<string, NodeJS.Timeout>();
+  /** One debounced batch per project, retained while that project's tests are running. */
+  private readonly liveChanges = new Map<string, LiveBatch>();
+  private readonly livePlanning = new Set<string>();
+  private readonly deferredPlanning = new Set<string>();
+  private requestEpoch = 0;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly stateEmitter = new vscode.EventEmitter<RunnerState>();
   readonly overlay: OverlayTracker;
@@ -119,8 +129,12 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       // Virtual documents (git:, diff views) share the fsPath of the real file; only the real one owns its parse.
       vscode.workspace.onDidCloseTextDocument(doc => {
         if (doc.uri.scheme !== 'file') return;
+        for (const [projectId, batch] of this.liveChanges) if (batch.changes.delete(doc.uri.fsPath)) {
+          batch.revision++;
+          if (!batch.changes.size) this.clearLiveChanges(projectId);
+        }
         this.docs.forget(doc.uri.fsPath);
-        for (const key of this.onTypeRuns.keys()) if (key.endsWith(`\0${doc.uri.fsPath}`)) this.onTypeRuns.delete(key);
+        for (const key of this.liveRuns.keys()) if (key.endsWith(`\0${doc.uri.fsPath}`)) this.liveRuns.delete(key);
       }),
       vscode.workspace.onDidCreateFiles(e => this.onFilesChanged(e.files)),
       vscode.workspace.onDidDeleteFiles(e => this.onFilesChanged(e.files)),
@@ -170,6 +184,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   }
 
   dispose(): void {
+    this.started = false;
     this.cancel('all');
     this.disposables.forEach(d => d.dispose());
     for (const t of this.changeTimers.values()) clearTimeout(t);
@@ -194,8 +209,9 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
 
   projectIdForFile(p: string): string | undefined { return this.registry.projectIdFor(p); }
 
-  async runFiles(selections: RunTestSelection[], reason: RunReason, opts: RunOptions = {}): Promise<RunHandle> {
+  async runFiles(selections: RunTestSelection[], reason: RunReason, opts: RunOptions = {}, isCurrent: () => boolean = () => true): Promise<RunHandle> {
     const group = this.newGroup();
+    const epoch = this.requestEpoch;
     if (!this.started) {
       // Stopped means no runs at all (the status bar says so); nothing is queued or spawned.
       const notRun = 'HyperJest is stopped (run "HyperJest: Start")';
@@ -213,14 +229,14 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
         if (entry.spec.status !== 'ok' || entry.spec.selected === false) { skipError = entry.spec.reason ?? 'Configuration is not selected'; continue; }
         try { await this.registry.resolveMatchers(projectId); }
         catch (error) { skipError = `${entry.spec.displayName}: ${(error as Error).message}`; this.log.warn(skipError); continue; }
-        if (!this.started || this.registry.get(projectId) !== entry || this.registry.get(projectId)?.spec.selected === false) continue;
+        if (!this.started || epoch !== this.requestEpoch || !isCurrent() || this.registry.get(projectId) !== entry || this.registry.get(projectId)?.spec.selected === false) continue;
         if (!this.registry.acceptsTest(projectId, sel.path)) { skipError = `Not matched by selected configuration: ${sel.path}`; continue; }
         this.enqueue({ projectId, selection: { ...sel, projectId }, reason, priority: opts.priority ?? PRIORITY[reason], updateSnapshot, group });
         count++;
       }
       if (!entries.length) skipError = `no Jest project selected for ${sel.path}`;
     }
-    if (!count) group.resolve({ wasInterrupted: false, error: skipError });
+    if (!count) group.resolve({ wasInterrupted: epoch !== this.requestEpoch || !isCurrent(), error: skipError });
     this.pump();
     return { runId: group.id, done: group.done, notRun: count ? undefined : skipError ?? 'no test files to run' };
   }
@@ -291,6 +307,8 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
 
   cancel(runId: string | 'all'): void {
     if (runId === 'all') {
+      this.requestEpoch++;
+      for (const projectId of this.liveChanges.keys()) this.clearLiveChanges(projectId);
       // Stale marks stay: no run refreshed those files since their last edit.
       for (const q of [...this.queue.values()]) this.dropQueued(q, true);
       for (const run of [...this.active.values()]) this.cancelRun(run, 'cancel all');
@@ -391,10 +409,10 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     item.groups.add(input.group);
     input.group.pending.add(item);
     this.store.markQueued(item.selection.path, item.projectId);
-    // A newer request for a file that is currently running supersedes the run (unless the running one is explicit).
-    // The superseded run's tests and waiting groups move to the new item so nothing it covered is lost.
+    // Automatic requests coalesce behind the active run; typing must not repeatedly cancel tests.
+    // An explicit request can still supersede lower-priority work.
     const running = this.activeByFile.get(key);
-    if (running && running.item.priority > 0 && !running.cancelled) {
+    if (running && input.priority === 0 && running.item.priority > 0 && !running.cancelled) {
       item.selection = mergeSelections(running.item.selection, item.selection);
       item.updateSnapshot = mergeSnapshotModes(running.item.updateSnapshot, item.updateSnapshot);
       for (const g of running.item.groups) { g.pending.delete(running.item); g.pending.add(item); item.groups.add(g); }
@@ -410,6 +428,8 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     let startedNow = 0;
     for (const item of items) {
       if (startedNow >= budget) break;
+      // A live batch plans all edited files before dispatch, so overlapping selections merge.
+      if (item.priority > 0 && (this.livePlanning.has(item.projectId) || this.deferredPlanning.has(item.projectId))) continue;
       if (this.activeByFile.has(item.key) || this.debuggingFiles.has(item.selection.path)) continue;
       // Snapshot writes share a physical file even when the results belong to different configs.
       if ([...this.active.values()].some(run => run.item.selection.path === item.selection.path
@@ -418,7 +438,37 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       startedNow++;
       void this.runOne(item);
     }
+    for (const projectId of this.liveChanges.keys()) void this.flushLiveChanges(projectId);
+    this.drainDeferred();
     this.emitState();
+  }
+
+  private drainDeferred(): void {
+    if (this.settings().runMode === 'manual') return;
+    for (const projectId of new Set([...this.deferred.values()].map(s => s.projectId!))) {
+      if (this.liveChanges.has(projectId) || this.livePlanning.has(projectId) || this.deferredPlanning.has(projectId)
+        || [...this.active.values()].some(r => r.item.projectId === projectId)
+        || [...this.queue.values()].some(q => q.projectId === projectId)) continue;
+      const selections = [...this.deferred.values()].filter(s => s.projectId === projectId);
+      const cap = this.settings().liveRun.maxTestFilesPerEdit;
+      const batch = cap > 0 ? selections.slice(0, cap) : selections;
+      this.deferredPlanning.add(projectId);
+      for (const s of batch) this.deferred.delete(`${projectId}\0${s.path}`);
+      void this.enqueueDeferredBatch(projectId, batch);
+    }
+  }
+
+  private async enqueueDeferredBatch(projectId: string, batch: RunTestSelection[]): Promise<void> {
+    try {
+      await this.runFiles(batch, 'onSave');
+    } catch (error) {
+      this.log.warn(`deferred tests: ${(error as Error).message}`);
+    } finally {
+      // Matcher resolution can yield before any file is queued. Reserve the project until the
+      // whole batch is enqueued, then pump even when no file matched (so later batches proceed).
+      this.deferredPlanning.delete(projectId);
+      this.pump();
+    }
   }
 
   private async runOne(item: QueuedFile): Promise<void> {
@@ -626,7 +676,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     if (msg.type === 'log') { this.log[msg.level](`[${source}] ${msg.text}`); return true; }
     if (msg.type === 'overlayWriteBlocked') {
       // The save this message asks for must re-run the file: it is not "already handled by on-type".
-      for (const key of this.onTypeRuns.keys()) if (key.endsWith(`\0${msg.path}`)) this.onTypeRuns.delete(key);
+      for (const key of this.liveRuns.keys()) if (key.endsWith(`\0${msg.path}`)) this.liveRuns.delete(key);
       void vscode.window.showWarningMessage(`HyperJest: save ${path.basename(msg.path)} to write inline snapshots (writes to unsaved files are blocked).`);
       return true;
     }
@@ -691,6 +741,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
 
   private onRegistryEvent(e: import('./discovery/projectRegistry').RegistryEvent): void {
     if (e.type === 'invalidated') {
+      this.clearLiveChanges(e.projectId);
       this.knownSpecs.set(e.projectId, 'invalidated');
       for (const item of [...this.queue.values()]) if (item.projectId === e.projectId) this.dropQueued(item, true);
       this.graphRequested.delete(e.projectId);
@@ -708,6 +759,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       const current = new Map(e.result.specs.filter(s => s.selected !== false && s.status === 'ok').map(s => [s.id, JSON.stringify(s)]));
       const changed = new Set([...this.knownSpecs.keys()].filter(id => current.get(id) !== this.knownSpecs.get(id)));
       for (const id of changed) {
+        this.clearLiveChanges(id);
         for (const run of this.active.values()) if (run.item.projectId === id) this.cancelRun(run, 'configuration selection changed');
         for (const item of [...this.queue.values()]) if (item.projectId === id) this.dropQueued(item, true);
         for (const [key, selection] of this.deferred) if (selection.projectId === id) this.deferred.delete(key);
@@ -717,7 +769,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       }
       const added = [...current.keys()].filter(id => current.get(id) !== this.knownSpecs.get(id));
       this.knownSpecs = current;
-      this.onTypeRuns.clear();
+      this.liveRuns.clear();
       this.overlay.refresh();
       for (const spec of e.result.specs) if (spec.selected !== false) this.store.setProjectLabel(spec.id, spec.displayName);
       if (this.started && !this.initializing && this.settings().runMode !== 'manual') {
@@ -783,10 +835,15 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     const s = this.settings();
     if (this.registry.isTestFile(p)) this.docs.update(p, doc.getText());
     this.store.markStale(p);
-    if (s.runMode !== 'onType') return;
-    const existing = this.changeTimers.get(p);
-    if (existing) clearTimeout(existing);
-    this.changeTimers.set(p, setTimeout(() => { this.changeTimers.delete(p); void this.runAffected(p, doc.getText(), 'onType'); }, s.onTypeDebounceMs));
+    if (s.runMode !== 'onType') {
+      // A saved version waiting to run is no longer current. In on-save mode, wait for another save.
+      for (const [projectId, batch] of this.liveChanges) if (batch.changes.delete(p)) {
+        batch.revision++;
+        if (!batch.changes.size) this.clearLiveChanges(projectId);
+      }
+      return;
+    }
+    this.scheduleLiveChange(doc, 'onType', s.onTypeDebounceMs);
   }
 
   private onDocumentSaved(doc: vscode.TextDocument): void {
@@ -794,20 +851,77 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     const p = doc.uri.fsPath;
     const s = this.settings();
     if (this.registry.isTestFile(p)) this.docs.update(p, doc.getText());
-    if (this.deferred.size) void this.runDeferred();
     if (s.runMode === 'manual') return;
-    const existing = this.changeTimers.get(p);
-    if (existing) { clearTimeout(existing); this.changeTimers.delete(p); }
     const text = doc.getText();
-    // On-type already ran (or is running) the affected tests for exactly this text: saving changes nothing.
-    if (!existing && this.onTypeHandled(p, text)) return;
-    setTimeout(() => void this.runAffected(p, text, 'onSave'), s.onSaveDebounceMs);
+    // An automatic run already ran (or is running) the affected tests for exactly this text: saving changes nothing.
+    if (this.liveRunHandled(p, text)) return;
+    this.scheduleLiveChange(doc, 'onSave', s.onSaveDebounceMs);
   }
 
-  private onTypeHandled(p: string, text: string): boolean {
+  private scheduleLiveChange(document: vscode.TextDocument, reason: 'onType' | 'onSave', delay: number): void {
+    for (const entry of this.registry.projectsFor(document.uri.fsPath)) {
+      const projectId = entry.spec.id;
+      let batch = this.liveChanges.get(projectId);
+      if (!batch) this.liveChanges.set(projectId, batch = { revision: 0, changes: new Map() });
+      batch.revision++;
+      const now = Date.now();
+      batch.changes.set(document.uri.fsPath, { document, reason, readyAt: now + delay });
+      // Saving may accelerate this path, but cannot shorten another buffer's typing pause.
+      const readyAt = Math.max(...[...batch.changes.values()].map(change => change.readyAt));
+      const timer = this.changeTimers.get(projectId);
+      if (timer) clearTimeout(timer);
+      this.changeTimers.set(projectId, setTimeout(() => {
+        this.changeTimers.delete(projectId);
+        void this.flushLiveChanges(projectId);
+      }, Math.max(0, readyAt - now)));
+    }
+  }
+
+  private clearLiveChanges(projectId: string): void {
+    const timer = this.changeTimers.get(projectId);
+    if (timer) clearTimeout(timer);
+    this.changeTimers.delete(projectId);
+    this.liveChanges.delete(projectId);
+  }
+
+  private async flushLiveChanges(projectId: string): Promise<void> {
+    const batch = this.liveChanges.get(projectId);
+    if (!batch || !this.started || this.paused || this.changeTimers.has(projectId)
+      || this.livePlanning.has(projectId) || this.deferredPlanning.has(projectId)) return;
+    const mode = this.settings().runMode;
+    if (mode === 'manual') { this.clearLiveChanges(projectId); return; }
+    if (mode === 'onSave') for (const [p, change] of batch.changes) {
+      if (change.reason === 'onType') batch.changes.delete(p);
+    }
+    if (!batch.changes.size) { this.clearLiveChanges(projectId); return; }
+    if ([...this.active.values()].some(r => r.item.projectId === projectId)
+      || [...this.queue.values()].some(q => q.projectId === projectId)) return;
+    const revision = batch.revision;
+    const isCurrent = () => this.started && !this.paused && this.settings().runMode === mode
+      && this.liveChanges.get(projectId) === batch && batch.revision === revision;
+    this.livePlanning.add(projectId);
+    let committed = false;
+    try {
+      await Promise.all([...batch.changes].map(([p, change]) =>
+        this.runAffectedProject(p, change.document.getText(), change.reason, projectId, isCurrent)));
+      if (isCurrent()) { committed = true; this.liveChanges.delete(projectId); }
+    } catch (error) {
+      this.log.warn(`live tests: ${(error as Error).message}`);
+      if (isCurrent()) this.liveChanges.delete(projectId);
+    } finally {
+      if (!committed) for (const q of [...this.queue.values()]) {
+        if (q.projectId === projectId && q.priority > 0) this.dropQueued(q, true);
+      }
+      this.livePlanning.delete(projectId);
+      // Edits arriving during async discovery retain every changed path and get a fresh selection.
+      this.pump();
+    }
+  }
+
+  private liveRunHandled(p: string, text: string): boolean {
     const entries = this.registry.projectsFor(p);
     return entries.length > 0 && entries.every(e => {
-      const last = this.onTypeRuns.get(`${e.spec.id}\0${p}`);
+      const last = this.liveRuns.get(`${e.spec.id}\0${p}`);
       return !!last && last.text === text && (!last.done || !last.outcome || (!last.outcome.wasInterrupted && !last.outcome.error));
     });
   }
@@ -818,7 +932,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     return results.find(r => r?.kind === 'runs') ?? results.find(Boolean);
   }
 
-  private async runAffectedProject(p: string, text: string, reason: 'onType' | 'onSave', projectId: string): Promise<AffectedResult | undefined> {
+  private async runAffectedProject(p: string, text: string, reason: 'onType' | 'onSave', projectId: string, isCurrent: () => boolean = () => true): Promise<AffectedResult | undefined> {
     const store = this.store.forProject(projectId);
     const entry = projectId ? this.registry.get(projectId) : undefined;
     if (!entry || entry.spec.status !== 'ok') return undefined;
@@ -865,23 +979,40 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     });
     this.log.info(`affected(${path.basename(p)}, ${reason}): ${result.kind}${result.kind === 'runs' ? ` ${result.runs.length} file(s)${result.deferred.length ? `, ${result.deferred.length} deferred` : ''}` : ''}${'reason' in result ? ` (${result.reason})` : ''}`);
     const runReason = reason === 'onType' ? 'onType' : 'onSave';
+    const dispatch = (selections: RunTestSelection[], why: RunReason) => this.runFiles(selections, why, {}, isCurrent);
+    if (!isCurrent()) return undefined;
     // Continuous runs re-run on every edit of their project, whatever the edit affects.
     const watched = result.kind === 'invalidateConfig' ? [] : this.continuousSelections(projectId!);
     let handle: Promise<RunHandle> | undefined;
     switch (result.kind) {
       case 'runs': {
         // runFiles merges duplicate paths (a whole-file watch absorbs a narrowed affected run).
-        const runs = [...result.runs, ...watched];
-        if (runs.length) handle = this.runFiles(runs.map(r => ({ ...r, projectId })), runReason);
-        for (const d of result.deferred) this.deferred.set(`${projectId}\0${d.path}`, { ...d, projectId });
+        const runs = [...result.runs.map(r => mergeSelections(this.deferred.get(`${projectId}\0${r.path}`) ?? r, r)), ...watched];
+        if (runs.length) handle = dispatch(runs.map(r => ({ ...r, projectId })), runReason);
+        for (const r of result.runs) this.deferred.delete(`${projectId}\0${r.path}`);
+        for (const d of result.deferred) {
+          const key = `${projectId}\0${d.path}`;
+          this.deferred.set(key, { ...mergeSelections(this.deferred.get(key) ?? d, d), projectId });
+        }
         if (result.truncated) this.log.info(`affected: ${result.deferred.length} test file(s) deferred (liveRun.maxTestFilesPerEdit)`);
         break;
       }
       case 'discover': {
-        if (watched.length) void this.runFiles(watched, 'continuous');
-        if (!s.affected.discoverWithJest) break;
+        if (!s.affected.discoverWithJest) {
+          if (watched.length) handle = dispatch(watched, 'continuous');
+          break;
+        }
         const files = await findRelatedTests(entry.spec, [p], `related-${Date.now().toString(36)}`, s.env, this.log);
-        if (files.length) handle = this.runFiles(files.slice(0, s.liveRun.maxTestFilesPerEdit).map(f => ({ path: f, projectId })), runReason);
+        if (!isCurrent()) return undefined;
+        const cap = s.liveRun.maxTestFilesPerEdit > 0 ? s.liveRun.maxTestFilesPerEdit : files.length;
+        // One handle covers both selections, including slow matcher lookups. Replacing a separate
+        // watch handle would let the live batch finish early and discard its unfinished enqueue.
+        const runs = [...watched, ...files.slice(0, cap).map(f => ({ path: f, projectId }))];
+        if (runs.length) handle = dispatch(runs, files.length ? runReason : 'continuous');
+        if (files.length) {
+          for (const f of files.slice(0, cap)) this.deferred.delete(`${projectId}\0${f}`);
+          for (const f of files.slice(cap)) this.deferred.set(`${projectId}\0${f}`, { path: f, projectId });
+        }
         else this.log.info(`no tests cover ${path.basename(p)} (jest --findRelatedTests)`);
         break;
       }
@@ -891,19 +1022,21 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
         this.registry.invalidate(projectId!, [p]);
         break;
       case 'none':
-        if (watched.length) void this.runFiles(watched, 'continuous');
+        if (watched.length) handle = dispatch(watched, 'continuous');
         this.log.info(`no tests cover ${path.basename(p)}`);
         break;
     }
-    if (reason === 'onType' && result.kind !== 'invalidateConfig') this.recordOnTypeRun(`${projectId}\0${p}`, text, handle);
-    else this.onTypeRuns.delete(`${projectId}\0${p}`);
+    if (result.kind !== 'invalidateConfig' && isCurrent()) this.recordLiveRun(`${projectId}\0${p}`, text, handle);
+    else this.liveRuns.delete(`${projectId}\0${p}`);
+    // Keep the batch live until asynchronous matcher resolution has either queued or rejected it.
+    await handle;
     this.emitState();
     return result;
   }
 
-  private recordOnTypeRun(p: string, text: string, handle: Promise<RunHandle> | undefined): void {
+  private recordLiveRun(p: string, text: string, handle: Promise<RunHandle> | undefined): void {
     const entry: { text: string; outcome?: RunOutcome; done: Promise<RunOutcome> | undefined } = { text, done: undefined };
-    this.onTypeRuns.set(p, entry);
+    this.liveRuns.set(p, entry);
     if (!handle) return;
     const done = handle.then(h => h.done);
     entry.done = done;

@@ -149,7 +149,14 @@ describe('selectAffected: source-file edits', () => {
   it('returns discover when no data exists at all, none when a graph exists but nothing imports the file', () => {
     expect(selectAffected(base({ inverseStaticGraph: null }))).toMatchObject({ kind: 'discover' });
     expect(selectAffected(base({ inverseStaticGraph: new Map() }))).toMatchObject({ kind: 'none', reason: 'no tests cover math.ts' });
-    expect(selectAffected(base({ inverseStaticGraph: null, loadedBy: setMap([['/repo/other.ts', [T1]]]) }))).toMatchObject({ kind: 'none' });
+    expect(selectAffected(base({ inverseStaticGraph: null, loadedBy: setMap([['/repo/other.ts', [T1]]]) }))).toMatchObject({ kind: 'discover' });
+  });
+
+  it('still discovers an untracked source when other sources already have passing runtime data', () => {
+    expect(selectAffected(base({
+      inverseStaticGraph: null,
+      loadedBy: new Map([['/repo/unrelated.ts', new Set(['/repo/other.test.ts'])]]),
+    }))).toMatchObject({ kind: 'discover' });
   });
 
   it('caps the number of files per edit, deferring lower-priority files', () => {

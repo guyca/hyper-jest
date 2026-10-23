@@ -46,8 +46,8 @@ export function buildStatusBarModel(input: StatusBarInput): StatusBarModel {
   parts.push(running ? '$(loading~spin)' : state.paused ? '$(debug-pause)' : '$(beaker)');
   if (!compact) parts.push('HyperJest');
   if (state.capped) {
-    parts.push(`${state.capped.count} affected tests — click to run`);
-    tooltip.push(`An edit affected ${state.capped.count} test files, more than hyperjest.liveRun.maxTestFilesPerEdit allows. Click to run them.`);
+    parts.push(`${state.capped.count} affected files waiting`);
+    tooltip.push(`Remaining affected test files run automatically in batches after current work finishes. Click to queue them now.`);
   } else {
     parts.push(compact ? `$(check-all) ${summary.passed}` : `✓ ${summary.passed}`);
     parts.push(compact ? `$(error) ${summary.failed}` : `✗ ${summary.failed}`);

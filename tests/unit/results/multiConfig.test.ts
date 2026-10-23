@@ -1,6 +1,41 @@
 import { ResultStore } from '../../../src/results/resultStore';
+import { computeLineView } from '../../../src/results/lineView';
 import { makeTestKey } from '../../../src/core/protocol';
 import { applyFullRun, PROJECT, SPEC, SRC, T, key, fileStart, testResult, testCoverage, coverageMeta, fileResult, runComplete } from './fixtures';
+
+it.each(['existing', 'created after rerun'])('an unrelated %s project does not keep refreshed coverage hollow', when => {
+  let now = 0;
+  const store = new ResultStore({ now: () => ++now });
+  applyFullRun(store, 'before', { positiveStatus: 'passed' });
+  if (when === 'existing') store.forProject('unrelated');
+  store.markStale(SRC);
+  expect([...computeLineView(store, SRC).lines.values()].filter(l => l.state === 'covered').every(l => l.stale)).toBe(true);
+  applyFullRun(store, 'after', { positiveStatus: 'passed' });
+  if (when === 'created after rerun') store.forProject('unrelated');
+  expect(store.forProject(PROJECT).staleInfo(SRC)).toBeUndefined();
+  expect(store.staleInfo(SRC)).toBeUndefined();
+  const green = [...computeLineView(store, SRC).lines.values()].filter(l => l.state === 'covered');
+  expect(green.length).toBeGreaterThan(0);
+  expect(green.every(l => !l.stale)).toBe(true);
+  store.dispose();
+});
+
+it('keeps shared-source coverage hollow until every contributing configuration catches up', () => {
+  let now = 0;
+  const store = new ResultStore({ now: () => ++now });
+  const otherRun = (runId: string) => applyFullRun({ apply: msg => store.apply(msg, 'other') }, runId, { positiveStatus: 'passed' });
+  applyFullRun(store, 'first', { positiveStatus: 'passed' });
+  otherRun('other-first');
+  store.markStale(SRC);
+  applyFullRun(store, 'fresh', { positiveStatus: 'passed' });
+  expect(store.forProject(PROJECT).staleInfo(SRC)).toBeUndefined();
+  expect(store.staleInfo(SRC)).toBeDefined();
+  expect([...computeLineView(store, SRC).lines.values()].filter(l => l.state === 'covered').every(l => l.stale)).toBe(true);
+  otherRun('other-fresh');
+  expect(store.staleInfo(SRC)).toBeUndefined();
+  expect([...computeLineView(store, SRC).lines.values()].filter(l => l.state === 'covered').every(l => !l.stale)).toBe(true);
+  store.dispose();
+});
 
 it('keeps the same file and test independent across configurations, including reruns and removal', () => {
   const store = new ResultStore();
