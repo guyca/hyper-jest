@@ -101,7 +101,8 @@ export async function manualCandidate(api, pr) {
   }
   const baseSha = await api.firstParent(pr.merge_commit_sha);
   const [base, merged] = await Promise.all([api.manifest(baseSha), api.manifest(pr.merge_commit_sha)]);
-  if (`${merged.publisher}.${merged.name}` !== EXTENSION_ID || compareVersions(merged.version, base.version) <= 0) {
+  if ([base, merged].some(manifest => `${manifest.publisher}.${manifest.name}` !== EXTENSION_ID) ||
+      compareVersions(merged.version, base.version) <= 0) {
     throw new Error('Manual release PR must increase the HyperJest version over its merge parent.');
   }
   return {
@@ -124,9 +125,7 @@ export async function versionBumpCandidate(api, pr, floor = null) {
   const base = await api.manifest(baseSha);
   if (!VERSION.test(base.version)) return null;
   if (compareVersions(merged.version, base.version) <= 0) return null;
-  if ([base, merged].some(manifest => `${manifest.publisher}.${manifest.name}` !== EXTENSION_ID)) {
-    throw new Error(`PR #${pr.number} changes the HyperJest extension identity.`);
-  }
+  if ([base, merged].some(manifest => `${manifest.publisher}.${manifest.name}` !== EXTENSION_ID)) return null;
   return {
     schemaVersion: 1, releaseKind: 'automatic', prNumber: pr.number, headSha: pr.head.sha,
     mergeSha: pr.merge_commit_sha, baseSha, version: merged.version, extensionId: EXTENSION_ID,

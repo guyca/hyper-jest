@@ -153,7 +153,7 @@ test('automatic eligibility skips unchanged, decreasing, unmerged and non-master
   assert.equal((await planRelease(api)).candidate, null);
 });
 
-test('automatic eligibility skips unsupported versions and rejects changes to the extension identity', async () => {
+test('automatic eligibility skips unsupported versions and mismatched extension identities', async () => {
   const api = manualApi();
   const source = await api.pull();
   for (const version of ['0.1.1-beta.1', 'v0.1.1', '0.01.1', 'garbage']) {
@@ -162,8 +162,50 @@ test('automatic eligibility skips unsupported versions and rejects changes to th
   }
   for (const changed of [baseSha, mergeSha]) {
     api.manifest = async sha => ({ name: sha === changed ? 'other' : 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : '0.1.1' });
-    await assert.rejects(versionBumpCandidate(api, source), /extension identity/);
+    assert.equal(await versionBumpCandidate(api, source), null);
   }
+});
+
+test('historical identity-changing bumps cannot block later valid releases', async () => {
+  for (const field of ['name', 'publisher']) {
+    for (const side of ['base', 'merged']) {
+      const api = manualApi();
+      const source = await api.pull();
+      const historicalSha = 'd'.repeat(40);
+      const historicalBase = 'e'.repeat(40);
+      const correctedBase = 'f'.repeat(40);
+      const historical = { ...source, number: 29, merge_commit_sha: historicalSha, merged_at: '2026-10-13T10:00:00Z' };
+      api.closedPulls = async () => [source, historical];
+      api.pull = async number => number === historical.number ? historical : source;
+      api.stableReleases = async () => [{ tag_name: 'v0.1.0', draft: false }];
+      api.landedBase = async pr => pr.number === historical.number ? historicalBase : correctedBase;
+      api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli',
+        version: sha === historicalBase ? '0.1.0' : sha === source.merge_commit_sha ? '0.1.2' : '0.1.1',
+        ...(sha === (side === 'base' ? historicalBase : historicalSha) ? { [field]: 'other' } : {}),
+      });
+      const plan = await planRelease(api);
+      assert.equal(plan.candidate.prNumber, source.number);
+      assert.equal(plan.candidate.version, '0.1.2');
+      assert.equal(plan.remaining, 0);
+    }
+  }
+});
+
+test('manual releases and publication still reject mismatched extension identities', async t => {
+  const { api, selected, output } = await automaticFixture(t);
+  const originalManifest = api.manifest;
+  for (const field of ['name', 'publisher']) {
+    for (const changed of [baseSha, mergeSha]) {
+      api.manifest = async sha => ({ ...await originalManifest(sha), ...(sha === changed ? { [field]: 'other' } : {}) });
+      const source = { ...pr, user: { login: 'guyca' }, labels: [] };
+      await assert.rejects(manualCandidate(api, source), /must increase the HyperJest version/);
+      await assert.rejects(publishRelease(api, {
+        version: async () => assert.fail('Ineligible source must be rejected before Marketplace access'),
+      }, selected, output), /Current PR eligibility conflicts/);
+    }
+  }
+  assert.equal(api.calls.includes('createTag'), false);
+  assert.equal(api.calls.includes('createRelease'), false);
 });
 
 test('historical unsupported versions on either side of a PR cannot block a later stable release', async () => {
