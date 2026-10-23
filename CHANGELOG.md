@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Run affected tests after 500 ms without typing, coalesce edits per project, and continue remaining affected files automatically in bounded batches.
+- Fix missed reruns and stale results when coverage is incomplete or edits overlap active test runs.
+- Publish merged version-bump PRs automatically after master CI passes, with generated GitHub release notes and retained artifacts for retries.
+
 ## 0.2.1
 
 - Fix the Marketplace icon dimensions and add HyperJest branding to the README.
