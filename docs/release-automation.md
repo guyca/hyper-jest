@@ -167,24 +167,54 @@ and [Azure Login OIDC guidance](https://github.com/Azure/login#login-with-openid
 
 ## Release lifecycle and recovery
 
-For a release unrelated to a Jest repair, merge a PR that bumps the extension
-version and adds its changelog section. Wait for successful push CI on the exact
-merge commit, then explicitly dispatch the same publishing workflow:
+Merge a PR into `master` that increases the root `package.json` extension version
+to a stable `major.minor.patch` value. Merging the version bump approves automatic
+publication, including for PRs from forks. Merge commits, squash merges, and
+multi-commit rebase merges are supported; the controller compares the version
+before the landed PR range with its final commit, even if the bump occurred in
+an earlier rebased commit. PRs without an increase do not publish, and the workflow
+never chooses or commits a new version for you.
+
+Successful push CI on the exact landed commit makes the PR eligible. The
+serialized release workflow scans merged PRs in merge order, so replaced pending
+workflow events do not lose releases. It verifies master ancestry and the
+unchanged `GuyCarmeli.hyperjest` identity, skips historical published versions,
+and rejects competing PRs requesting the same release version. A later queued
+release waits when the oldest candidate's CI has not passed. Every master commit
+gets its own CI run.
+
+Ordinary automatic releases use GitHub-generated release notes, with changes and
+contributors since the previous published stable version tag through the exact
+release commit. Intervening fixes without version bumps are included. No
+version-specific `CHANGELOG.md` section is required. Notes appear on the GitHub
+release and are linked from a bot status comment on the PR; the source changelog
+and the VSIX contents are not modified. GitHub's note-generation endpoint needs
+Contents write permission, so only the publish job generates notes.
+
+The draft release retains the generated notes, their checksum, and the previous
+tag used as their comparison baseline. Retries reuse this snapshot even if PR
+titles or descriptions have changed. If note generation fails, the original VSIX
+and checksums are already retained in the draft and a retry can generate notes
+without rebuilding the package.
+
+To retry a specific merged version-bump PR, use:
 
 ```sh
 gh workflow run release.yml --ref master -f release_pr=<merged-version-bump-pr>
 ```
 
-This manual path checks the version increase against the merge parent and uses
-the same immutable tag, retained VSIX, checksums, Marketplace verification, and
-retry behavior as repaired releases. It never runs automatically for ordinary
-PRs. Repeat the same command to resume a failed manual release.
+This dispatch resumes an automatic reservation with its original identity, notes,
+and VSIX. Existing manual and Jest-repair reservations also retain their original
+identities and changelog-based notes. For a PR without an automatic reservation,
+the explicit `release_pr` dispatch preserves the legacy manual path: a
+same-repository version bump and its version-specific changelog section are
+required. Use a dispatch without inputs to rescan the automatic queue instead.
 
-After you merge a repaired PR, successful CI on its exact merge commit makes it
-eligible for the release queue. Every master commit gets its own CI run. The
-serialized release workflow scans all marked merged PRs in merge order, so
-replaced pending workflow events do not lose releases. It verifies the Actions-bot
-repair record; a label alone cannot authorize publication.
+Validated Jest repairs remain part of the same queue, with no duplicate release
+for the ordinary version bump. The controller still verifies the Actions-bot
+repair record before publishing a repair candidate; a label alone cannot authorize
+the repair path. A merged PR can independently qualify through its stable
+extension version increase.
 
 The build job has no publishing credentials. It builds the exact tested merge
 commit and retains `hyperjest-<version>.vsix`, checksums, and source metadata. The
@@ -220,8 +250,18 @@ fix the underlying setup or service problem, then retry:
 gh workflow run release.yml --ref master -f pr_number=30
 ```
 
-An older queued release is processed first. Nothing is automatically merged, and
-unrepaired Jest PRs and unrelated PRs do not enter this release queue.
+The `pr_number` input processes an older queued release first and also accepts
+ordinary version-bump PRs. Nothing is automatically merged. A plain dispatch
+rescans the queue; failed runs leave their reserved artifacts for recovery.
+
+## Automatic version-bump rollout
+
+The existing `marketplace` environment and Azure identity are reused; no new
+credentials or AI service are needed. Merge this automation after CI passes,
+then merge the next stable version bump to exercise the automatic flow. The
+current published version is `0.2.1`; scheduling fix PR #43 retained that version
+and therefore does not trigger a release. A subsequent `0.2.2` bump will include
+that fix in the generated notes.
 
 ## Initial rollout
 
