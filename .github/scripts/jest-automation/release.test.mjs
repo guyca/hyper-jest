@@ -153,16 +153,42 @@ test('automatic eligibility skips unchanged, decreasing, unmerged and non-master
   assert.equal((await planRelease(api)).candidate, null);
 });
 
-test('automatic eligibility rejects invalid versions and changes to either side of the extension identity', async () => {
+test('automatic eligibility skips unsupported versions and rejects changes to the extension identity', async () => {
   const api = manualApi();
   const source = await api.pull();
   for (const version of ['0.1.1-beta.1', 'v0.1.1', '0.01.1', 'garbage']) {
     api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : version });
-    await assert.rejects(versionBumpCandidate(api, source), /invalid stable release version/);
+    assert.equal(await versionBumpCandidate(api, source), null);
   }
   for (const changed of [baseSha, mergeSha]) {
     api.manifest = async sha => ({ name: sha === changed ? 'other' : 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : '0.1.1' });
     await assert.rejects(versionBumpCandidate(api, source), /extension identity/);
+  }
+});
+
+test('historical unsupported versions on either side of a PR cannot block a later stable release', async () => {
+  for (const versions of [
+    { merged: '0.0.1-beta.1', base: '0.0.0' },
+    { merged: undefined, base: '0.0.0' },
+    { merged: 'garbage', base: '0.0.0' },
+    { merged: '0.1.0', base: '0.1.0-beta.1' },
+    { merged: '0.1.0', base: undefined },
+  ]) {
+    const api = manualApi();
+    const source = await api.pull();
+    const historicalSha = 'd'.repeat(40);
+    const historicalBase = 'e'.repeat(40);
+    const historical = { ...source, number: 29, merge_commit_sha: historicalSha, merged_at: '2026-10-13T10:00:00Z' };
+    api.closedPulls = async () => [source, historical];
+    api.pull = async number => number === historical.number ? historical : source;
+    api.stableReleases = async () => [{ tag_name: 'v0.1.0', draft: false }];
+    api.landedBase = async pr => pr.number === historical.number ? historicalBase : baseSha;
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version:
+      sha === historicalSha ? versions.merged : sha === historicalBase ? versions.base : sha === baseSha ? '0.1.0' : '0.1.1' });
+    const plan = await planRelease(api);
+    assert.equal(plan.candidate.prNumber, source.number);
+    assert.equal(plan.candidate.version, '0.1.1');
+    assert.equal(plan.remaining, 0);
   }
 });
 
@@ -357,6 +383,10 @@ test('manual release rejects unmerged, foreign, wrong-base and unchanged-version
   ]) await assert.rejects(manualCandidate(api, { ...source, ...patch }), /merged PR/);
   api.manifest = async () => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: '0.1.1' });
   await assert.rejects(planManualRelease(api, pr.number), /must increase/);
+  for (const version of ['0.1.1-beta.1', undefined]) {
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : version });
+    await assert.rejects(planManualRelease(api, pr.number), /stable major.minor.patch/);
+  }
 });
 
 test('manual release requires successful exact-source master CI, ancestry and changelog', async () => {
@@ -458,6 +488,28 @@ test('a completed release is removed from the queue without losing later work', 
   const plan = await planRelease(api);
   assert.equal(plan.candidate, null);
   assert.match(plan.reason, /already been released/);
+});
+
+test('an unchanged-version PR after the published floor does not block the next unique bump', async t => {
+  const { api, output } = await fixture(t);
+  await publishRelease(api, { version: async () => null, latestVersion: async () => null, publish: async () => {}, verify: async () => {} }, candidate, output);
+  const published = await api.release(candidate.tag);
+  api.release = async tag => tag === candidate.tag ? published : null;
+  const unchangedSha = 'd'.repeat(40);
+  const nextSha = 'e'.repeat(40);
+  const unchanged = { ...pr, number: 31, user: { login: 'guyca' }, labels: [], merge_commit_sha: unchangedSha, merged_at: '2026-10-14T11:00:00Z' };
+  const next = { ...unchanged, number: 32, merge_commit_sha: nextSha, merged_at: '2026-10-14T12:00:00Z' };
+  api.closedPulls = async () => [next, unchanged, pr];
+  api.pull = async number => number === pr.number ? pr : number === unchanged.number ? unchanged : next;
+  api.landedBase = async source => source.number === unchanged.number ? mergeSha : unchangedSha;
+  api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli',
+    version: sha === baseSha ? '0.1.0' : sha === nextSha ? '0.1.2' : '0.1.1',
+    devDependencies: { jest: sha === baseSha ? '29.7.0' : '30.4.0' },
+  });
+  const plan = await planRelease(api);
+  assert.equal(plan.candidate.prNumber, next.number);
+  assert.equal(plan.candidate.version, '0.1.2');
+  assert.equal(plan.remaining, 0);
 });
 
 test('later merged repair is selected after its predecessor was published', async t => {

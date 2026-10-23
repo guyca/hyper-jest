@@ -115,11 +115,14 @@ export async function versionBumpCandidate(api, pr, floor = null) {
   if (!pr.merged_at || pr.base?.ref !== 'master' ||
       !SHA.test(pr.head?.sha) || !SHA.test(pr.merge_commit_sha)) return null;
   const merged = await api.manifest(pr.merge_commit_sha);
-  if (!VERSION.test(merged.version)) throw new Error(`PR #${pr.number} has an invalid stable release version.`);
+  // The queue scans all merged PRs, including historical prereleases and
+  // manifests without versions. Unsupported versions are not release candidates.
+  if (!VERSION.test(merged.version)) return null;
   // Old releases may predate the current extension identity and landing policy.
   if (floor && compareVersions(merged.version, floor) < 0) return null;
   const baseSha = await api.landedBase(pr);
   const base = await api.manifest(baseSha);
+  if (!VERSION.test(base.version)) return null;
   if (compareVersions(merged.version, base.version) <= 0) return null;
   if ([base, merged].some(manifest => `${manifest.publisher}.${manifest.name}` !== EXTENSION_ID)) {
     throw new Error(`PR #${pr.number} changes the HyperJest extension identity.`);

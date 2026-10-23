@@ -174,6 +174,10 @@ multi-commit rebase merges are supported; the controller compares the version
 before the landed PR range with its final commit, even if the bump occurred in
 an earlier rebased commit. PRs without an increase do not publish, and the workflow
 never chooses or commits a new version for you.
+The automatic scan skips PRs whose starting or final version is missing or is not
+a stable `major.minor.patch` value, so unsupported historical versions cannot
+block later eligible releases. Explicit manual requests still validate their
+selected version and fail if it is unsupported.
 
 Successful push CI on the exact landed commit makes the PR eligible. The
 serialized release workflow scans merged PRs in merge order, so replaced pending
