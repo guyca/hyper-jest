@@ -68,7 +68,7 @@ interface ActiveRun {
 
 interface LiveBatch {
   revision: number;
-  changes: Map<string, { document: vscode.TextDocument; reason: 'onType' | 'onSave' }>;
+  changes: Map<string, { document: vscode.TextDocument; reason: 'onType' | 'onSave'; readyAt: number }>;
 }
 
 let seq = 0;
@@ -92,6 +92,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   /** One debounced batch per project, retained while that project's tests are running. */
   private readonly liveChanges = new Map<string, LiveBatch>();
   private readonly livePlanning = new Set<string>();
+  private readonly deferredPlanning = new Set<string>();
   private requestEpoch = 0;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly stateEmitter = new vscode.EventEmitter<RunnerState>();
@@ -428,7 +429,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     for (const item of items) {
       if (startedNow >= budget) break;
       // A live batch plans all edited files before dispatch, so overlapping selections merge.
-      if (item.priority > 0 && this.livePlanning.has(item.projectId)) continue;
+      if (item.priority > 0 && (this.livePlanning.has(item.projectId) || this.deferredPlanning.has(item.projectId))) continue;
       if (this.activeByFile.has(item.key) || this.debuggingFiles.has(item.selection.path)) continue;
       // Snapshot writes share a physical file even when the results belong to different configs.
       if ([...this.active.values()].some(run => run.item.selection.path === item.selection.path
@@ -445,14 +446,28 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   private drainDeferred(): void {
     if (this.settings().runMode === 'manual') return;
     for (const projectId of new Set([...this.deferred.values()].map(s => s.projectId!))) {
-      if (this.liveChanges.has(projectId) || this.livePlanning.has(projectId)
+      if (this.liveChanges.has(projectId) || this.livePlanning.has(projectId) || this.deferredPlanning.has(projectId)
         || [...this.active.values()].some(r => r.item.projectId === projectId)
         || [...this.queue.values()].some(q => q.projectId === projectId)) continue;
       const selections = [...this.deferred.values()].filter(s => s.projectId === projectId);
       const cap = this.settings().liveRun.maxTestFilesPerEdit;
       const batch = cap > 0 ? selections.slice(0, cap) : selections;
+      this.deferredPlanning.add(projectId);
       for (const s of batch) this.deferred.delete(`${projectId}\0${s.path}`);
-      void this.runFiles(batch, 'onSave');
+      void this.enqueueDeferredBatch(projectId, batch);
+    }
+  }
+
+  private async enqueueDeferredBatch(projectId: string, batch: RunTestSelection[]): Promise<void> {
+    try {
+      await this.runFiles(batch, 'onSave');
+    } catch (error) {
+      this.log.warn(`deferred tests: ${(error as Error).message}`);
+    } finally {
+      // Matcher resolution can yield before any file is queued. Reserve the project until the
+      // whole batch is enqueued, then pump even when no file matched (so later batches proceed).
+      this.deferredPlanning.delete(projectId);
+      this.pump();
     }
   }
 
@@ -849,13 +864,16 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       let batch = this.liveChanges.get(projectId);
       if (!batch) this.liveChanges.set(projectId, batch = { revision: 0, changes: new Map() });
       batch.revision++;
-      batch.changes.set(document.uri.fsPath, { document, reason });
+      const now = Date.now();
+      batch.changes.set(document.uri.fsPath, { document, reason, readyAt: now + delay });
+      // Saving may accelerate this path, but cannot shorten another buffer's typing pause.
+      const readyAt = Math.max(...[...batch.changes.values()].map(change => change.readyAt));
       const timer = this.changeTimers.get(projectId);
       if (timer) clearTimeout(timer);
       this.changeTimers.set(projectId, setTimeout(() => {
         this.changeTimers.delete(projectId);
         void this.flushLiveChanges(projectId);
-      }, delay));
+      }, Math.max(0, readyAt - now)));
     }
   }
 
@@ -868,7 +886,8 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
 
   private async flushLiveChanges(projectId: string): Promise<void> {
     const batch = this.liveChanges.get(projectId);
-    if (!batch || !this.started || this.paused || this.changeTimers.has(projectId) || this.livePlanning.has(projectId)) return;
+    if (!batch || !this.started || this.paused || this.changeTimers.has(projectId)
+      || this.livePlanning.has(projectId) || this.deferredPlanning.has(projectId)) return;
     const mode = this.settings().runMode;
     if (mode === 'manual') { this.clearLiveChanges(projectId); return; }
     if (mode === 'onSave') for (const [p, change] of batch.changes) {

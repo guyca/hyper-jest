@@ -4,7 +4,8 @@
 
 By default, HyperJest runs affected tests from unsaved buffers after **500 ms without typing**.
 Each edit resets the project's timer. Saving triggers a run after 100 ms, unless the same text
-is already being tested or has completed. Configure these delays with `hyperjest.onTypeDebounceMs`
+is already being tested or has completed. A save waits for any other pending buffers in the project
+to finish their typing pause. Configure these delays with `hyperjest.onTypeDebounceMs`
 and `hyperjest.onSaveDebounceMs`.
 
 Edits made while tests run accumulate into one pending batch per project. The current run finishes,

@@ -201,6 +201,25 @@ describe('RunCoordinator live scheduling', () => {
     runner.dispose(); store.dispose();
   });
 
+  it('saving one file does not shorten a sibling buffer\'s typing debounce', async () => {
+    const { runner, store, w1, workerMsg } = setup({ onSaveDebounceMs: 100 });
+    await runner.start();
+    const other = '/repo/pkg/src/other.js';
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC, other] }, testFiles: [A], unresolved: 0 } as any);
+    const saved = edit(SRC, 'export const x = 1;');
+    await advance(100);
+    edit(other, 'export const y = 2;');
+    await advance(100);
+    fire('save', saved);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(0);
+    await advance(299);
+    expect(w1.runs()).toHaveLength(0);
+    await advance(1);
+    expect(w1.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
   it('cancels pending timers on stop so restart does not run an old edit', async () => {
     const { runner, store, w1 } = setup();
     await runner.start();
@@ -261,6 +280,36 @@ describe('RunCoordinator live scheduling', () => {
     expect(w1.runs()).toHaveLength(2);
     expect(w1.runs()[1].tests).toEqual([{ path: b }]);
     expect(runner.getState().capped).toBeUndefined();
+    runner.dispose(); store.dispose();
+  });
+
+  it('reserves a deferred batch while asynchronous matcher resolution is pending', async () => {
+    const { runner, store, w1, w2, registry, workerMsg, complete } = setup({ liveRun: { maxTestFilesPerEdit: 1 } });
+    await runner.start();
+    const b = '/repo/pkg/b.test.js', c = '/repo/pkg/c.test.js';
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC], [b]: [SRC], [c]: [SRC] }, testFiles: [A, b, c], unresolved: 0 } as any);
+    edit(SRC, 'export const x = 1;');
+    await advance(500);
+    await runner.runFiles([{ path: C }], 'explicit');
+    await advance();
+    let resolve!: () => void;
+    registry.resolveMatchers.mockImplementationOnce(() => new Promise(r => { resolve = () => r({}); }));
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    expect(runner.getState().capped?.count).toBe(1);
+    // Completing another project pumps the queue while b is still resolving its matchers.
+    complete(w2, w2.runs()[0].runId);
+    await advance();
+    expect(runner.getState().capped?.count).toBe(1);
+    expect(w1.runs()).toHaveLength(1);
+    resolve();
+    await advance();
+    expect(w1.runs()).toHaveLength(2);
+    expect(w1.runs()[1].tests).toEqual([{ path: b }]);
+    complete(w1, w1.runs()[1].runId);
+    await advance();
+    expect(w1.runs()).toHaveLength(3);
+    expect(w1.runs()[2].tests).toEqual([{ path: c }]);
     runner.dispose(); store.dispose();
   });
 
