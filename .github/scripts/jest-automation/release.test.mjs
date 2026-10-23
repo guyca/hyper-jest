@@ -6,7 +6,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
   compareVersions, eligibleCandidate, GitHubApi, inspectVsix, parseMarker,
-  manualCandidate, planManualRelease, planRelease, publishRelease, releaseNotes, reserveRelease, stageArtifact,
+  manualCandidate, planManualRelease, planRelease, publishRelease, releaseNotes, reserveRelease, stageArtifact, versionBumpCandidate,
 } from './release.mjs';
 import { Marketplace } from './release-marketplace.mjs';
 
@@ -41,6 +41,13 @@ function fakeApi() {
     manifest: async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: '0.1.1', devDependencies: { jest: sha === baseSha ? '29.7.0' : '30.4.0' } }),
     changelog: async () => '# Changelog\n\n## 0.2.0\n\n- Raise the guaranteed Jest support window.\n\n## 0.1.1\n\n- Fix Jest compatibility.\n',
     successfulCi: async () => ({ id: 123, html_url: candidate.ciUrl }), isOnMaster: async () => true,
+    landedBase: async () => baseSha,
+    stableReleases: async () => release && !release.draft ? [release] : [],
+    isAncestor: async () => true,
+    generateNotes: async (tag, sha, previousTag) => {
+      calls.push(`notes:${tag}:${sha}:${previousTag}`);
+      return { body: '## What changed\n\n- Fix affected-test scheduling (#43).' };
+    },
     release: async () => release, tagTarget: async () => tag,
     createTag: async (name, sha) => { calls.push('createTag'); tag = sha; },
     createRelease: async data => { calls.push('createRelease'); release = { ...data, id: 1, assets: [], html_url: 'https://example.test/release' }; return release; },
@@ -118,13 +125,295 @@ function manualApi(api = fakeApi()) {
   return api;
 }
 
+test('automatic releases accept stable version increases from merged PRs including forks', async () => {
+  const api = manualApi();
+  const source = await api.pull();
+  api.changelog = async () => assert.fail('Automatic releases do not require a changelog section');
+  for (const version of ['0.1.1', '0.2.0', '1.0.0']) {
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : version });
+    const selected = await versionBumpCandidate(api, { ...source, head: { sha: headSha, repo: { full_name: 'contributor/fork' } } });
+    assert.equal(selected.version, version);
+    assert.equal(selected.releaseKind, 'automatic');
+  }
+  const planned = (await planRelease(api)).candidate;
+  assert.equal(planned.releaseNotes, undefined);
+  assert.equal(api.calls.some(call => call.startsWith('notes:')), false, 'Read-only queue never generates notes');
+});
+
+test('automatic eligibility skips unchanged, decreasing, unmerged and non-master PRs', async () => {
+  const api = manualApi();
+  const source = await api.pull();
+  for (const patch of [{ merged_at: null }, { base: { ref: 'feature' } }, { merge_commit_sha: 'invalid' }]) {
+    assert.equal(await versionBumpCandidate(api, { ...source, ...patch }), null);
+  }
+  for (const version of ['0.1.0', '0.0.9']) {
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : version });
+    assert.equal(await versionBumpCandidate(api, source), null);
+  }
+  assert.equal((await planRelease(api)).candidate, null);
+});
+
+test('automatic eligibility skips unsupported versions and mismatched extension identities', async () => {
+  const api = manualApi();
+  const source = await api.pull();
+  for (const version of ['0.1.1-beta.1', 'v0.1.1', '0.01.1', 'garbage']) {
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : version });
+    assert.equal(await versionBumpCandidate(api, source), null);
+  }
+  for (const changed of [baseSha, mergeSha]) {
+    api.manifest = async sha => ({ name: sha === changed ? 'other' : 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : '0.1.1' });
+    assert.equal(await versionBumpCandidate(api, source), null);
+  }
+});
+
+test('historical identity-changing bumps cannot block later valid releases', async () => {
+  for (const field of ['name', 'publisher']) {
+    for (const side of ['base', 'merged']) {
+      const api = manualApi();
+      const source = await api.pull();
+      const historicalSha = 'd'.repeat(40);
+      const historicalBase = 'e'.repeat(40);
+      const correctedBase = 'f'.repeat(40);
+      const historical = { ...source, number: 29, merge_commit_sha: historicalSha, merged_at: '2026-10-13T10:00:00Z' };
+      api.closedPulls = async () => [source, historical];
+      api.pull = async number => number === historical.number ? historical : source;
+      api.stableReleases = async () => [{ tag_name: 'v0.1.0', draft: false }];
+      api.landedBase = async pr => pr.number === historical.number ? historicalBase : correctedBase;
+      api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli',
+        version: sha === historicalBase ? '0.1.0' : sha === source.merge_commit_sha ? '0.1.2' : '0.1.1',
+        ...(sha === (side === 'base' ? historicalBase : historicalSha) ? { [field]: 'other' } : {}),
+      });
+      const plan = await planRelease(api);
+      assert.equal(plan.candidate.prNumber, source.number);
+      assert.equal(plan.candidate.version, '0.1.2');
+      assert.equal(plan.remaining, 0);
+    }
+  }
+});
+
+test('manual releases and publication still reject mismatched extension identities', async t => {
+  const { api, selected, output } = await automaticFixture(t);
+  const originalManifest = api.manifest;
+  for (const field of ['name', 'publisher']) {
+    for (const changed of [baseSha, mergeSha]) {
+      api.manifest = async sha => ({ ...await originalManifest(sha), ...(sha === changed ? { [field]: 'other' } : {}) });
+      const source = { ...pr, user: { login: 'guyca' }, labels: [] };
+      await assert.rejects(manualCandidate(api, source), /must increase the HyperJest version/);
+      await assert.rejects(publishRelease(api, {
+        version: async () => assert.fail('Ineligible source must be rejected before Marketplace access'),
+      }, selected, output), /Current PR eligibility conflicts/);
+    }
+  }
+  assert.equal(api.calls.includes('createTag'), false);
+  assert.equal(api.calls.includes('createRelease'), false);
+});
+
+test('historical unsupported versions on either side of a PR cannot block a later stable release', async () => {
+  for (const versions of [
+    { merged: '0.0.1-beta.1', base: '0.0.0' },
+    { merged: undefined, base: '0.0.0' },
+    { merged: 'garbage', base: '0.0.0' },
+    { merged: '0.1.0', base: '0.1.0-beta.1' },
+    { merged: '0.1.0', base: undefined },
+  ]) {
+    const api = manualApi();
+    const source = await api.pull();
+    const historicalSha = 'd'.repeat(40);
+    const historicalBase = 'e'.repeat(40);
+    const historical = { ...source, number: 29, merge_commit_sha: historicalSha, merged_at: '2026-10-13T10:00:00Z' };
+    api.closedPulls = async () => [source, historical];
+    api.pull = async number => number === historical.number ? historical : source;
+    api.stableReleases = async () => [{ tag_name: 'v0.1.0', draft: false }];
+    api.landedBase = async pr => pr.number === historical.number ? historicalBase : baseSha;
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version:
+      sha === historicalSha ? versions.merged : sha === historicalBase ? versions.base : sha === baseSha ? '0.1.0' : '0.1.1' });
+    const plan = await planRelease(api);
+    assert.equal(plan.candidate.prNumber, source.number);
+    assert.equal(plan.candidate.version, '0.1.1');
+    assert.equal(plan.remaining, 0);
+  }
+});
+
+test('automatic queue waits for exact landed CI and rejects sources outside master', async () => {
+  const api = manualApi();
+  api.successfulCi = async sha => { assert.equal(sha, mergeSha); return null; };
+  const waiting = await planRelease(api);
+  assert.equal(waiting.candidate, null);
+  assert.match(waiting.reason, /exact merged commit/);
+  api.successfulCi = async () => ({ id: 123, html_url: candidate.ciUrl });
+  api.isOnMaster = async () => false;
+  await assert.rejects(planRelease(api), /no longer on master/);
+});
+
+test('automatic queue orders bumps, rejects duplicate versions, and skips historical releases', async () => {
+  const api = manualApi();
+  const source = await api.pull();
+  const laterSha = 'd'.repeat(40);
+  const newer = { ...source, number: 31, merge_commit_sha: laterSha, merged_at: '2026-10-14T11:00:00Z' };
+  api.closedPulls = async () => [newer, source];
+  api.pull = async number => number === source.number ? source : newer;
+  api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : sha === mergeSha ? '0.1.1' : '0.2.0' });
+  const first = await planRelease(api);
+  assert.equal(first.candidate.prNumber, source.number);
+  assert.equal(first.remaining, 1);
+  assert.equal((await planRelease(api)).candidate.mergeSha, first.candidate.mergeSha);
+  api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : '0.1.1' });
+  await assert.rejects(planRelease(api), /same version/);
+  api.stableReleases = async () => [{ tag_name: 'v0.2.0', draft: false }];
+  assert.equal((await planRelease(api)).candidate, null);
+});
+
+test('GitHub adapter identifies landed ranges for merge, squash and multi-commit rebase PRs', async () => {
+  const earlySha = 'd'.repeat(40);
+  for (const strategy of ['merge', 'squash', 'rebase']) {
+    const api = new GitHubApi('guyca/hyper-jest', 'test-token', async url => {
+      const resource = new URL(url).pathname;
+      if (resource.endsWith(`/git/commits/${mergeSha}`)) return Response.json({ parents: strategy === 'merge'
+        ? [{ sha: baseSha }, { sha: headSha }] : [{ sha: strategy === 'rebase' ? earlySha : baseSha }] });
+      if (resource.endsWith(`/commits/${earlySha}/pulls`)) return Response.json([{ number: pr.number, merged_at: pr.merged_at }]);
+      if (resource.endsWith(`/git/commits/${earlySha}`)) return Response.json({ parents: [{ sha: baseSha }] });
+      if (resource.endsWith(`/commits/${baseSha}/pulls`)) return Response.json([{ number: 29, merged_at: pr.merged_at }]);
+      assert.fail(`Unexpected GitHub request: ${resource}`);
+    });
+    assert.equal(await api.landedBase(pr), baseSha, strategy);
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : '0.1.1' });
+    assert.equal((await versionBumpCandidate(api, pr)).baseSha, baseSha);
+  }
+  const api = new GitHubApi('guyca/hyper-jest', 'test-token', async () => Response.json({ parents: [] }));
+  await assert.rejects(api.landedBase(pr), /landed PR parent/);
+});
+
+test('GitHub adapter selects published stable releases and sends explicit note boundaries', async () => {
+  const requests = [];
+  const api = new GitHubApi('guyca/hyper-jest', 'test-token', async (url, options) => {
+    requests.push({ url, options });
+    return Response.json(options.method === 'POST' ? { body: 'Generated notes' } : [
+      { tag_name: 'v0.9.0' }, { tag_name: 'v0.10.0' }, { tag_name: 'v0.11.0', draft: true },
+      { tag_name: 'v1.0.0', prerelease: true }, { tag_name: 'v2.0.0-beta.1' }, { tag_name: 'other' },
+    ]);
+  });
+  assert.deepEqual((await api.stableReleases()).map(release => release.tag_name), ['v0.10.0', 'v0.9.0']);
+  await api.generateNotes('v0.11.0', mergeSha, 'v0.10.0');
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), { tag_name: 'v0.11.0', target_commitish: mergeSha, previous_tag_name: 'v0.10.0' });
+  assert.equal(requests.at(-1).options.method, 'POST');
+  await api.generateNotes('v0.1.0', mergeSha, null);
+  assert.equal(Object.hasOwn(JSON.parse(requests.at(-1).options.body), 'previous_tag_name'), false);
+});
+
+async function automaticFixture(t) {
+  const result = await fixture(t);
+  const api = manualApi(result.api);
+  const pull = api.pull;
+  api.pull = async number => {
+    const source = await pull(number);
+    return { ...source, head: { ...source.head, repo: { full_name: 'contributor/fork' } } };
+  };
+  const selected = (await planRelease(api)).candidate;
+  const manifest = await stageArtifact(api, selected, result.output, result.source);
+  api.changelog = async () => assert.fail('Automatic releases do not read CHANGELOG.md');
+  return { ...result, api, selected, manifest };
+}
+
+test('automatic publication retains generated notes and baseline before authentication, then reuses both on retry', async t => {
+  const { api, selected, output, source, directory, manifest } = await automaticFixture(t);
+  api.stableReleases = async () => [{ tag_name: 'v0.1.0', draft: false }];
+  const originalTarget = api.tagTarget;
+  api.tagTarget = async tag => tag === 'v0.1.0' ? baseSha : originalTarget(tag);
+  api.isAncestor = async (base, head) => { assert.equal(base, baseSha); assert.equal(head, mergeSha); return true; };
+  api.generateNotes = async (tag, sha, previousTag) => {
+    assert.equal(tag, selected.tag);
+    assert.equal(sha, mergeSha);
+    assert.equal(previousTag, 'v0.1.0');
+    assert.ok(api.calls.includes(`upload:${selected.artifactName}`));
+    return { body: '## Changes\n\n- Earlier fix (#42).\n- Version bump (#43). <!-- user text -->' };
+  };
+  const { release } = await reserveRelease(api, selected, output);
+  const record = parseMarker(release.body, 'hyperjest-release');
+  assert.equal(record.generatedNotes.previousTag, 'v0.1.0');
+  assert.match(release.body, /Earlier fix/);
+  assert.equal(release.draft, true);
+  await rm(source);
+  await rm(output, { recursive: true });
+  api.generateNotes = async () => assert.fail('Retries must not regenerate notes');
+  const retry = (await planRelease(api)).candidate;
+  const manualRetry = (await planManualRelease(api, pr.number)).candidate;
+  assert.equal(manualRetry.releaseKind, 'automatic');
+  assert.deepEqual(manualRetry.generatedNotes, retry.generatedNotes);
+  const restored = path.join(directory, 'automatic-retry');
+  await stageArtifact(api, retry, restored, '/missing-original-build');
+  let publishes = 0;
+  await publishRelease(api, {
+    version: async () => null, latestVersion: async () => '0.1.0', publish: async () => { publishes++; },
+    verify: async (_, actual) => assert.equal(actual.sha256, manifest.sha256),
+  }, retry, restored);
+  assert.equal(publishes, 1);
+  const published = await api.release(selected.tag);
+  assert.equal(published.draft, false);
+  assert.deepEqual(parseMarker(published.body, 'hyperjest-release').generatedNotes, record.generatedNotes);
+  assert.equal((await planRelease(api)).candidate, null);
+});
+
+test('note-generation failures retain the exact package and can resume through release_pr', async t => {
+  const { api, selected, output, source, directory } = await automaticFixture(t);
+  api.generateNotes = async () => { throw new Error('GitHub notes service unavailable'); };
+  let publishes = 0;
+  const marketplace = { version: async () => null, latestVersion: async () => null, publish: async () => { publishes++; }, verify: async () => {} };
+  await assert.rejects(publishRelease(api, marketplace, selected, output), /notes service unavailable/);
+  assert.equal(publishes, 0);
+  const reserved = await api.release(selected.tag);
+  assert.ok(parseMarker(reserved.body, 'hyperjest-release').sha256);
+  assert.equal(reserved.assets.length, 3);
+  await rm(source);
+  const retry = (await planManualRelease(api, pr.number)).candidate;
+  assert.equal(retry.releaseKind, 'automatic');
+  const restored = path.join(directory, 'notes-retry');
+  await stageArtifact(api, retry, restored, '/missing-original');
+  api.generateNotes = async () => ({ body: 'Recovered notes' });
+  await publishRelease(api, marketplace, retry, restored);
+  assert.equal(publishes, 1);
+  assert.equal((await api.release(selected.tag)).draft, false);
+});
+
+test('automatic publication failure reuses frozen notes and never republishes an existing Marketplace version', async t => {
+  const { api, selected, output } = await automaticFixture(t);
+  let publishes = 0;
+  const marketplace = {
+    version: async () => publishes ? { version: selected.version } : null,
+    latestVersion: async () => publishes ? selected.version : null,
+    publish: async () => { publishes++; }, verify: async () => { throw new Error('Verification pending'); },
+  };
+  await assert.rejects(publishRelease(api, marketplace, selected, output), /Verification pending/);
+  api.generateNotes = async () => assert.fail('Notes are already reserved');
+  const retry = (await planManualRelease(api, pr.number)).candidate;
+  marketplace.verify = async () => {};
+  await publishRelease(api, marketplace, retry, output);
+  assert.equal(publishes, 1);
+});
+
+test('automatic reservations reject corrupt notes and unrelated previous release tags', async t => {
+  const { api, selected, output } = await automaticFixture(t);
+  api.stableReleases = async () => [{ tag_name: 'v0.1.0' }];
+  const originalTarget = api.tagTarget;
+  api.tagTarget = async tag => tag === 'v0.1.0' ? baseSha : originalTarget(tag);
+  api.isAncestor = async () => false;
+  await assert.rejects(reserveRelease(api, selected, output), /not an ancestor/);
+  api.isAncestor = async () => true;
+  await reserveRelease(api, selected, output);
+  const release = await api.release(selected.tag);
+  const record = parseMarker(release.body, 'hyperjest-release');
+  record.generatedNotes.sha256 = '0'.repeat(64);
+  release.body = `<!-- hyperjest-release:${JSON.stringify(record)} -->`;
+  await assert.rejects(planRelease(api), /notes fail their reserved checksum/);
+  await assert.rejects(reserveRelease(api, selected, output), /notes fail their reserved checksum/);
+});
+
 test('manual release accepts an explicitly selected merged version bump without repair metadata', async () => {
   const api = manualApi();
   const { candidate: selected } = await planManualRelease(api, pr.number);
   assert.equal(selected.releaseKind, 'manual');
   assert.equal(selected.mergeSha, mergeSha);
   assert.equal(selected.ciRunId, 123);
-  assert.equal((await planRelease(api)).candidate, null);
+  assert.equal((await planRelease(api)).candidate.releaseKind, 'automatic');
 });
 
 test('manual release rejects unmerged, foreign, wrong-base and unchanged-version PRs', async () => {
@@ -136,6 +425,10 @@ test('manual release rejects unmerged, foreign, wrong-base and unchanged-version
   ]) await assert.rejects(manualCandidate(api, { ...source, ...patch }), /merged PR/);
   api.manifest = async () => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: '0.1.1' });
   await assert.rejects(planManualRelease(api, pr.number), /must increase/);
+  for (const version of ['0.1.1-beta.1', undefined]) {
+    api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === baseSha ? '0.1.0' : version });
+    await assert.rejects(planManualRelease(api, pr.number), /stable major.minor.patch/);
+  }
 });
 
 test('manual release requires successful exact-source master CI, ancestry and changelog', async () => {
@@ -157,6 +450,9 @@ test('manual release retains its original VSIX across authentication failure and
   await stageArtifact(api, selected, output, source);
   await reserveRelease(api, selected, output);
   assert.match((await api.release(selected.tag)).body, /Release from #30/);
+  const automaticRetry = (await planRelease(api)).candidate;
+  assert.equal(automaticRetry.releaseKind, 'manual', 'The automatic queue preserves legacy manual reservations');
+  assert.equal(automaticRetry.existingAssetId, (await api.release(selected.tag)).assets.find(asset => asset.name === selected.artifactName).id);
   await rm(source);
   const retry = (await planManualRelease(api, pr.number)).candidate;
   const restored = path.join(directory, 'manual-retry');
@@ -203,10 +499,12 @@ test('GitHub adapter selects the merge parent and rejects a parentless source', 
 
 test('queue orders all merged repairs and waits for exact-source CI', async () => {
   const api = fakeApi();
-  const newer = { ...pr, number: 31, merged_at: '2026-10-14T11:00:00Z' };
+  const laterSha = 'd'.repeat(40);
+  const newer = { ...pr, number: 31, merge_commit_sha: laterSha, merged_at: '2026-10-14T11:00:00Z' };
   api.closedPulls = async () => [newer, pr];
   api.pull = async number => number === 30 ? pr : newer;
-  api.comments = async number => [repairComment({ ...state, prNumber: number })];
+  api.comments = async number => [repairComment({ ...state, prNumber: number, version: number === 30 ? '0.1.1' : '0.2.0' })];
+  api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli', version: sha === laterSha ? '0.2.0' : '0.1.1', devDependencies: { jest: sha === baseSha ? '29.7.0' : '30.4.0' } });
   const plan = await planRelease(api, 31);
   assert.equal(plan.candidate.prNumber, 30);
   assert.equal(plan.remaining, 1);
@@ -232,6 +530,28 @@ test('a completed release is removed from the queue without losing later work', 
   const plan = await planRelease(api);
   assert.equal(plan.candidate, null);
   assert.match(plan.reason, /already been released/);
+});
+
+test('an unchanged-version PR after the published floor does not block the next unique bump', async t => {
+  const { api, output } = await fixture(t);
+  await publishRelease(api, { version: async () => null, latestVersion: async () => null, publish: async () => {}, verify: async () => {} }, candidate, output);
+  const published = await api.release(candidate.tag);
+  api.release = async tag => tag === candidate.tag ? published : null;
+  const unchangedSha = 'd'.repeat(40);
+  const nextSha = 'e'.repeat(40);
+  const unchanged = { ...pr, number: 31, user: { login: 'guyca' }, labels: [], merge_commit_sha: unchangedSha, merged_at: '2026-10-14T11:00:00Z' };
+  const next = { ...unchanged, number: 32, merge_commit_sha: nextSha, merged_at: '2026-10-14T12:00:00Z' };
+  api.closedPulls = async () => [next, unchanged, pr];
+  api.pull = async number => number === pr.number ? pr : number === unchanged.number ? unchanged : next;
+  api.landedBase = async source => source.number === unchanged.number ? mergeSha : unchangedSha;
+  api.manifest = async sha => ({ name: 'hyperjest', publisher: 'GuyCarmeli',
+    version: sha === baseSha ? '0.1.0' : sha === nextSha ? '0.1.2' : '0.1.1',
+    devDependencies: { jest: sha === baseSha ? '29.7.0' : '30.4.0' },
+  });
+  const plan = await planRelease(api);
+  assert.equal(plan.candidate.prNumber, next.number);
+  assert.equal(plan.candidate.version, '0.1.2');
+  assert.equal(plan.remaining, 0);
 });
 
 test('later merged repair is selected after its predecessor was published', async t => {

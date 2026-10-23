@@ -101,7 +101,8 @@ export async function manualCandidate(api, pr) {
   }
   const baseSha = await api.firstParent(pr.merge_commit_sha);
   const [base, merged] = await Promise.all([api.manifest(baseSha), api.manifest(pr.merge_commit_sha)]);
-  if (`${merged.publisher}.${merged.name}` !== EXTENSION_ID || compareVersions(merged.version, base.version) <= 0) {
+  if ([base, merged].some(manifest => `${manifest.publisher}.${manifest.name}` !== EXTENSION_ID) ||
+      compareVersions(merged.version, base.version) <= 0) {
     throw new Error('Manual release PR must increase the HyperJest version over its merge parent.');
   }
   return {
@@ -111,12 +112,67 @@ export async function manualCandidate(api, pr) {
   };
 }
 
+export async function versionBumpCandidate(api, pr, floor = null) {
+  if (!pr.merged_at || pr.base?.ref !== 'master' ||
+      !SHA.test(pr.head?.sha) || !SHA.test(pr.merge_commit_sha)) return null;
+  const merged = await api.manifest(pr.merge_commit_sha);
+  // The queue scans all merged PRs, including historical prereleases and
+  // manifests without versions. Unsupported versions are not release candidates.
+  if (!VERSION.test(merged.version)) return null;
+  // Old releases may predate the current extension identity and landing policy.
+  if (floor && compareVersions(merged.version, floor) < 0) return null;
+  const baseSha = await api.landedBase(pr);
+  const base = await api.manifest(baseSha);
+  if (!VERSION.test(base.version)) return null;
+  if (compareVersions(merged.version, base.version) <= 0) return null;
+  if ([base, merged].some(manifest => `${manifest.publisher}.${manifest.name}` !== EXTENSION_ID)) return null;
+  return {
+    schemaVersion: 1, releaseKind: 'automatic', prNumber: pr.number, headSha: pr.head.sha,
+    mergeSha: pr.merge_commit_sha, baseSha, version: merged.version, extensionId: EXTENSION_ID,
+    artifactName: `hyperjest-${merged.version}.vsix`, mergedAt: pr.merged_at, tag: `v${merged.version}`,
+  };
+}
+
+function restoreGeneratedNotes(candidate, record) {
+  if (!record.generatedNotes) return;
+  const notes = record.generatedNotes;
+  if ((notes.previousTag !== null && !/^v\d+\.\d+\.\d+$/.test(notes.previousTag)) ||
+      typeof notes.base64 !== 'string' || !HASH.test(notes.sha256)) throw new Error('Invalid retained release notes.');
+  const bytes = Buffer.from(notes.base64, 'base64');
+  if (!bytes.length || bytes.toString('base64') !== notes.base64 || sha256(bytes) !== notes.sha256) {
+    throw new Error('Retained release notes fail their reserved checksum.');
+  }
+  candidate.generatedNotes = notes;
+  candidate.releaseNotes = bytes.toString('utf8');
+}
+
+async function preserveReleaseKind(api, pr, candidate) {
+  const release = await api.release(candidate.tag);
+  const record = parseMarker(release?.body, RELEASE_MARKER);
+  if (!record || record.releaseKind === candidate.releaseKind) return candidate;
+  // Keep the original identity of manual and repair releases created by older controllers.
+  if (record.releaseKind === 'manual') return manualCandidate(api, pr);
+  if (record.releaseKind === 'automatic') {
+    const automatic = await versionBumpCandidate(api, pr);
+    if (automatic) return automatic;
+  }
+  if (record.releaseKind === undefined) {
+    const repair = await eligibleCandidate(api, pr);
+    if (repair) return repair;
+  }
+  throw new Error(`${candidate.tag} has an incompatible release reservation.`);
+}
+
 async function restoreReservation(api, candidate) {
   const release = await api.release(candidate.tag);
   if (!release) return true;
   const record = parseMarker(release.body, RELEASE_MARKER);
   assertIdentity(record, candidate);
   await assertTag(api, candidate);
+  if (candidate.releaseKind === 'automatic') {
+    restoreGeneratedNotes(candidate, record);
+    if (!release.draft && !candidate.generatedNotes) throw new Error('Published automatic release lost its retained notes.');
+  }
   if (!release.draft) return false;
   candidate.reservedHashes = reservedHashes(record);
   const packageAsset = release.assets?.find(asset => asset.name === candidate.artifactName && asset.state === 'uploaded');
@@ -128,7 +184,11 @@ async function restoreReservation(api, candidate) {
 }
 
 export async function planManualRelease(api, requestedPr) {
-  const candidate = await manualCandidate(api, await api.pull(requestedPr));
+  const pr = await api.pull(requestedPr);
+  const automatic = await versionBumpCandidate(api, pr);
+  const reservation = automatic && parseMarker((await api.release(automatic.tag))?.body, RELEASE_MARKER);
+  const candidate = reservation?.releaseKind === 'automatic'
+    ? automatic : await preserveReleaseKind(api, pr, await manualCandidate(api, pr));
   if (!(await restoreReservation(api, candidate))) return { candidate: null, reason: `${candidate.tag} has already been released.` };
   const ci = await api.successfulCi(candidate.mergeSha);
   if (!ci || !(await api.isOnMaster(candidate.mergeSha))) {
@@ -136,27 +196,35 @@ export async function planManualRelease(api, requestedPr) {
   }
   candidate.ciRunId = ci.id;
   candidate.ciUrl = ci.html_url;
-  candidate.releaseNotes = releaseNotes(await api.changelog(candidate.mergeSha), candidate.version);
+  if (candidate.releaseKind !== 'automatic') candidate.releaseNotes = releaseNotes(await api.changelog(candidate.mergeSha), candidate.version);
   return { candidate, remaining: 0 };
 }
 
 export async function planRelease(api, requestedPr = null) {
+  const published = await api.stableReleases();
+  const floor = published[0]?.tag_name.slice(1) ?? null;
   const candidates = [];
   for (const listed of await api.closedPulls()) {
-    if (!listed.merged_at || listed.user?.login !== 'dependabot[bot]' || !listed.labels?.some(label => label.name === REPAIR_LABEL)) continue;
-    const candidate = await eligibleCandidate(api, await api.pull(listed.number));
-    if (candidate) candidates.push(candidate);
+    if (!listed.merged_at || listed.base?.ref !== 'master') continue;
+    const pr = await api.pull(listed.number);
+    let candidate = await eligibleCandidate(api, pr) ?? await versionBumpCandidate(api, pr, floor);
+    if (!candidate || (floor && compareVersions(candidate.version, floor) < 0)) continue;
+    candidate = await preserveReleaseKind(api, pr, candidate);
+    candidates.push(candidate);
   }
   candidates.sort((a, b) => a.mergedAt.localeCompare(b.mergedAt) || a.prNumber - b.prNumber);
   if (requestedPr && !candidates.some(candidate => candidate.prNumber === requestedPr)) {
-    throw new Error(`PR #${requestedPr} is not a merged, validated Jest repair eligible for automatic release.`);
+    throw new Error(`PR #${requestedPr} is not a merged version bump eligible for automatic release.`);
   }
   const pending = [];
+  const versions = new Map();
   for (const candidate of candidates) {
+    if (versions.has(candidate.version)) throw new Error(`${candidate.tag} conflicts with PR #${candidate.prNumber}: another PR requests the same version.`);
+    versions.set(candidate.version, candidate.prNumber);
     if (!(await restoreReservation(api, candidate))) continue;
     pending.push(candidate);
   }
-  if (!pending.length) return { candidate: null, reason: 'All eligible merged Jest repairs have already been released.' };
+  if (!pending.length) return { candidate: null, reason: 'All eligible merged version bumps have already been released, or no new version bump was merged.' };
   const candidate = pending[0];
   const ci = await api.successfulCi(candidate.mergeSha);
   if (!ci) return {
@@ -166,7 +234,7 @@ export async function planRelease(api, requestedPr = null) {
   if (!(await api.isOnMaster(candidate.mergeSha))) throw new Error(`Release source ${candidate.mergeSha} is no longer on master.`);
   candidate.ciRunId = ci.id;
   candidate.ciUrl = ci.html_url;
-  candidate.releaseNotes = releaseNotes(await api.changelog(candidate.mergeSha), candidate.version);
+  if (candidate.releaseKind !== 'automatic') candidate.releaseNotes = releaseNotes(await api.changelog(candidate.mergeSha), candidate.version);
   return { candidate, remaining: pending.length - 1 };
 }
 
@@ -232,23 +300,40 @@ export async function stageArtifact(api, candidate, directory, builtFile) {
 }
 
 function releaseBody(candidate, manifest = null) {
-  return `<!-- ${RELEASE_MARKER}:${JSON.stringify({ ...identity(candidate), ...(manifest ? { sha256: manifest.sha256, payloadHash: manifest.payloadHash } : {}) })} -->\n\n` +
-    `${candidate.releaseNotes}\n\n` +
-    `${candidate.releaseKind === 'manual' ? 'Release' : 'Jest compatibility repair'} from #${candidate.prNumber}.\n\n` +
+  return `<!-- ${RELEASE_MARKER}:${JSON.stringify({ ...identity(candidate), ...(manifest ? { sha256: manifest.sha256, payloadHash: manifest.payloadHash } : {}), ...(candidate.generatedNotes ? { generatedNotes: candidate.generatedNotes } : {}) })} -->\n\n` +
+    `${candidate.releaseNotes ?? 'Release notes are pending.'}\n\n` +
+    `${candidate.releaseKind ? 'Release' : 'Jest compatibility repair'} from #${candidate.prNumber}.\n\n` +
     `Built from commit \`${candidate.mergeSha}\` after [CI passed](${candidate.ciUrl}).\n\n` +
     `Install the attached \`${candidate.artifactName}\` or update **HyperJest** from the VS Code Marketplace.`;
+}
+
+async function generateNotes(api, candidate) {
+  const previous = (await api.stableReleases()).find(release => compareVersions(release.tag_name.slice(1), candidate.version) < 0);
+  if (previous) {
+    const target = await api.tagTarget(previous.tag_name);
+    if (!target || !(await api.isAncestor(target, candidate.mergeSha))) throw new Error('Previous release tag is not an ancestor of the release source.');
+  }
+  const previousTag = previous?.tag_name ?? null;
+  const notes = await api.generateNotes(candidate.tag, candidate.mergeSha, previousTag);
+  if (typeof notes.body !== 'string' || !notes.body.trim()) throw new Error('GitHub returned empty release notes.');
+  const bytes = Buffer.from(notes.body, 'utf8');
+  candidate.generatedNotes = { previousTag, base64: bytes.toString('base64'), sha256: sha256(bytes) };
+  candidate.releaseNotes = notes.body;
 }
 
 export async function reserveRelease(api, candidate, directory) {
   // Re-read mutable eligibility before reserving or resuming an immutable artifact.
   const pr = await api.pull(candidate.prNumber);
-  const fresh = candidate.releaseKind === 'manual' ? await manualCandidate(api, pr) : await eligibleCandidate(api, pr);
+  const fresh = candidate.releaseKind === 'automatic' ? await versionBumpCandidate(api, pr)
+    : candidate.releaseKind === 'manual' ? await manualCandidate(api, pr) : await eligibleCandidate(api, pr);
   assertIdentity(fresh, candidate, 'Current PR eligibility');
   if (!(await api.successfulCi(candidate.mergeSha)) || !(await api.isOnMaster(candidate.mergeSha))) {
     throw new Error('Release source no longer has the required successful master CI or ancestry.');
   }
-  const notes = releaseNotes(await api.changelog(candidate.mergeSha), candidate.version);
-  if (notes !== candidate.releaseNotes) throw new Error('Release notes do not match the exact merged source.');
+  if (candidate.releaseKind !== 'automatic') {
+    const notes = releaseNotes(await api.changelog(candidate.mergeSha), candidate.version);
+    if (notes !== candidate.releaseNotes) throw new Error('Release notes do not match the exact merged source.');
+  }
   const filename = path.join(directory, candidate.artifactName);
   const manifest = await inspectVsix(filename, candidate);
   const stagedManifest = JSON.parse(await readFile(path.join(directory, 'release-manifest.json'), 'utf8'));
@@ -259,11 +344,21 @@ export async function reserveRelease(api, candidate, directory) {
   if (release) {
     const record = parseMarker(release.body, RELEASE_MARKER);
     assertIdentity(record, candidate);
+    if (candidate.releaseKind === 'automatic') {
+      // Only the reservation is authoritative; the queue artifact may predate generation.
+      delete candidate.generatedNotes;
+      delete candidate.releaseNotes;
+      restoreGeneratedNotes(candidate, record);
+      if (!release.draft && !candidate.generatedNotes) throw new Error('Published automatic release lost its retained notes.');
+    }
     const reserved = reservedHashes(record);
     assertArtifactHashes(manifest, reserved);
     if (reserved && !release.assets?.some(asset => asset.name === candidate.artifactName && asset.state === 'uploaded')) {
       throw new Error(`${candidate.tag} lost its reserved VSIX. Restore the retained artifact before retrying.`);
     }
+  } else if (candidate.releaseKind === 'automatic') {
+    delete candidate.generatedNotes;
+    delete candidate.releaseNotes;
   }
   if (!existingTarget) {
     await api.createTag(candidate.tag, candidate.mergeSha);
@@ -287,7 +382,14 @@ export async function reserveRelease(api, candidate, directory) {
       await api.uploadAsset(release.id, name, bytes);
     }
   }
-  if (release.draft) release = await api.updateRelease(release.id, { tag_name: candidate.tag, body: releaseBody(candidate, manifest) });
+  if (release.draft) {
+    // Retain checksums before note generation too: a GitHub API failure must not lose the VSIX.
+    release = await api.updateRelease(release.id, { tag_name: candidate.tag, body: releaseBody(candidate, manifest) });
+    if (candidate.releaseKind === 'automatic' && !candidate.generatedNotes) {
+      await generateNotes(api, candidate);
+      release = await api.updateRelease(release.id, { tag_name: candidate.tag, body: releaseBody(candidate, manifest) });
+    }
+  }
   return { release, filename, manifest };
 }
 
@@ -345,6 +447,33 @@ export class GitHubApi {
   }
   closedPulls() { return this.pages('pulls?state=closed&sort=updated&direction=desc'); }
   pull(number) { return this.request(`pulls/${number}`); }
+  async stableReleases() {
+    return (await this.pages('releases')).filter(release => !release.draft && !release.prerelease &&
+      release.tag_name?.startsWith('v') && VERSION.test(release.tag_name.slice(1)))
+      .sort((a, b) => compareVersions(b.tag_name.slice(1), a.tag_name.slice(1)));
+  }
+  generateNotes(tag, sha, previousTag) {
+    return this.request('releases/generate-notes', { method: 'POST', data: {
+      tag_name: tag, target_commitish: sha, ...(previousTag ? { previous_tag_name: previousTag } : {}),
+    } });
+  }
+  async landedBase(pr) {
+    let commit = await this.request(`git/commits/${pr.merge_commit_sha}`);
+    const visited = new Set([pr.merge_commit_sha]);
+    // Merge commits have a pre-merge first parent. Squashes have one landed
+    // commit; rebases have several. GitHub associates each landed rebase commit
+    // with its merged PR, so walk that contiguous range rather than inspecting
+    // only the final commit (which may not contain the version bump).
+    while (true) {
+      const parent = commit.parents?.[0]?.sha;
+      if (!SHA.test(parent) || visited.has(parent)) throw new Error('Release source must have an unambiguous landed PR parent.');
+      if (commit.parents.length > 1) return parent;
+      const pulls = await this.pages(`commits/${parent}/pulls`);
+      if (!pulls.some(pull => pull.number === pr.number && pull.merged_at)) return parent;
+      visited.add(parent);
+      commit = await this.request(`git/commits/${parent}`);
+    }
+  }
   async firstParent(sha) {
     const commit = await this.request(`git/commits/${sha}`);
     const parent = commit.parents?.[0]?.sha;
@@ -390,7 +519,10 @@ export class GitHubApi {
     return runs.find(run => run.head_sha === sha && run.head_branch === 'master' && run.event === 'push' && run.conclusion === 'success');
   }
   async isOnMaster(sha) {
-    const comparison = await this.request(`compare/${sha}...master`);
+    return this.isAncestor(sha, 'master');
+  }
+  async isAncestor(sha, descendant) {
+    const comparison = await this.request(`compare/${sha}...${descendant}`);
     return comparison.status === 'ahead' || comparison.status === 'identical';
   }
   createRelease(data) { return this.request('releases', { method: 'POST', data }); }
@@ -449,17 +581,10 @@ async function main() {
   if (command === 'report') {
     const runUrl = `https://github.com/${api.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
     const success = process.env.RELEASE_RESULT === 'success';
-    if (candidate.releaseKind === 'manual') {
-      await summary(success
-        ? `Released ${candidate.tag}. [Workflow](${runUrl}).`
-        : `Manual release of ${candidate.tag} did not complete. Retry release_pr=${candidate.prNumber} after resolving the failure; the reserved VSIX is retained. [Workflow](${runUrl}).`);
-      if (success) await api.dispatch();
-      return;
-    }
     try {
       await api.report(candidate.prNumber, success
         ? `Released **${candidate.tag}** to [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=${EXTENSION_ID}) and [GitHub Releases](https://github.com/${api.repo}/releases/tag/${candidate.tag}). [Workflow](${runUrl}).`
-        : `Automatic release of **${candidate.tag}** did not complete. [Inspect this workflow](${runUrl}) and retry it after resolving the failure. Any reserved tag, draft release, and VSIX are retained for an idempotent retry.`);
+        : `Release of **${candidate.tag}** did not complete. [Inspect this workflow](${runUrl}) and retry with release_pr=${candidate.prNumber} after resolving the failure. Any reserved tag, draft release, release notes, and VSIX are retained for an idempotent retry.`);
     } finally {
       // A transient comment failure must not strand later queued releases.
       if (success) await api.dispatch();

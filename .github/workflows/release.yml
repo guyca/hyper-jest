@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Optional merged Jest repair PR to retry (older queued releases run first)
+        description: Optional merged version-bump PR to retry (older queued releases run first)
         required: false
         type: string
       release_pr:
-        description: Merged version-bump PR to release manually (requires successful master CI)
+        description: Merged version-bump PR to release or resume (requires successful master CI)
         required: false
         type: string
 
@@ -58,7 +58,7 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Select requested release or oldest eligible merged repair
+      - name: Select requested release or oldest eligible merged version bump
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -161,7 +161,7 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Reserve draft release and exact VSIX before authentication
+      - name: Retain exact VSIX and generate release notes before authentication
         working-directory: controller
         env:
           GH_TOKEN: ${{ github.token }}
