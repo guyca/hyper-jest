@@ -74,4 +74,17 @@ describe('depGraph', () => {
     expect(graph.testFiles.has('/p/src/gone.js')).toBe(false);
     expect(resolvedAfterTick).toBeGreaterThan(0);
   });
+
+  it('updateDepGraph drops every file under a deleted folder', async () => {
+    const { chain, entries } = fixture(4, 0);
+    const graph = await buildDepGraph(entries, chain);
+    graph.forward.set('/p/src/sub/a.js', ['/p/src/f0.test.js']);
+    graph.forward.set('/p/src/sub/deep/b.test.js', ['/p/src/sub/a.js']);
+    graph.testFiles.add('/p/src/sub/deep/b.test.js');
+    graph.forward.set('/p/src/subway.js', []);
+    await updateDepGraph(graph, entries, chain, ['/p/src/sub']);
+    expect([...graph.forward.keys()].filter(k => k.includes('/sub'))).toEqual(['/p/src/subway.js']);
+    expect(graph.testFiles.has('/p/src/sub/deep/b.test.js')).toBe(false);
+    expect(graph.forward.size).toBe(5);
+  });
 });

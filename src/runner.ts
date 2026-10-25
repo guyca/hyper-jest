@@ -1030,7 +1030,9 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       if (watched) byProject.set(projectId, watched.filter(sel => sel.path !== p));
     }
     this.graphTestFiles.get(projectId)?.delete(p);
-    this.store.clearFile(p, projectId);
+    // The path is gone for every project, so the shared parse (CodeLens, declaration lines) goes too.
+    this.store.clearFile(p);
+    if (!vscode.workspace.textDocuments.some(d => d.uri.scheme === 'file' && d.uri.fsPath === p)) this.docs.forget(p);
   }
 
   /** Re-runs the tests that depended on deleted files, as whole files (capped like an edit). */

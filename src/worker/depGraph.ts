@@ -7,6 +7,7 @@
  * a big RN project has tens of thousands of files and `cancel`/`ping` must still be answered.
  * No static Jest imports.
  */
+import * as path from 'path';
 import type { GraphResultMsg } from '../core/protocol';
 import type { JestChain } from './jestChain';
 
@@ -109,8 +110,12 @@ export async function updateDepGraph(graph: DepGraph, entries: GraphContextEntry
     if (pause) await pause;
     const b = bundles.find(x => { try { return !!x.entry.context.hasteFS.exists(p); } catch { return false; } });
     if (!b) {
-      graph.forward.delete(p);
-      graph.testFiles.delete(p);
+      const known = graph.forward.delete(p);
+      if (graph.testFiles.delete(p) || known) continue;
+      // Not a known file: a deleted folder arrives as its own path, so drop everything under it.
+      const prefix = p.endsWith(path.sep) ? p : p + path.sep;
+      for (const key of [...graph.forward.keys()]) if (key.startsWith(prefix)) graph.forward.delete(key);
+      for (const key of [...graph.testFiles]) if (key.startsWith(prefix)) graph.testFiles.delete(key);
       continue;
     }
     const { deps } = resolveFile(b, p);

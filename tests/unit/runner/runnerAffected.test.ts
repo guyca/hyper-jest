@@ -998,10 +998,12 @@ describe('RunCoordinator deleted files', () => {
     const { runner, store, w1 } = setup();
     await runner.start();
     seedFailing(store, A);
+    store.setParsed(A, { nodes: [] } as any);
     expect(store.failingTests()).toHaveLength(1);
     diskDelete(A);
     await advance(1000);
     expect(store.fileRecord(A, P1)).toBeUndefined();
+    expect(store.parsed(A)).toBeUndefined();
     expect(store.failingTests()).toHaveLength(0);
     expect(w1.runs()).toHaveLength(0);
     runner.dispose(); store.dispose();
