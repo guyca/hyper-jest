@@ -1,0 +1,13 @@
+{
+  // Fixtures are test inputs, not projects: discovering them would import their wallaby.js
+  // into a generated hyperjest.config.js. The array replaces the defaults, so the ones that apply
+  // to this repo are repeated.
+  "hyperjest.discovery.exclude": [
+    "**/node_modules/**",
+    "**/.claude/worktrees/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/coverage/**",
+    "**/tests/fixtures/**"
+  ]
+}
