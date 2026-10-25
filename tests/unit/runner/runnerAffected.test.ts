@@ -856,6 +856,7 @@ describe('RunCoordinator disk changes made outside VS Code', () => {
   });
 
   const SNAP = '/repo/pkg/__snapshots__/a.test.js.snap';
+  const DISK_BATCH = 50;
   const fileResult = (r: ReturnType<typeof setup>, snapshot: Record<string, unknown>) => {
     const runId = r.w1.runs()[0].runId;
     r.workerMsg(r.w1, { type: 'fileResult', runId, path: A, status: 'passed', numPassing: 1, numFailing: 0, numPending: 0, numTodo: 0,
@@ -904,6 +905,50 @@ describe('RunCoordinator disk changes made outside VS Code', () => {
     await advance(1000);
     expect(r.w1.runs()).toHaveLength(2);
     r.runner.dispose(); r.store.dispose();
+  });
+
+  it('discards batched disk writes on Cancel All, keeping stale marks and file invalidation', async () => {
+    const { runner, store, pool, w1 } = setup();
+    await runner.start();
+    store.forProject(P1);
+    write('change', A);
+    write('create', '/repo/pkg/src/new.js');
+    runner.cancel('all');
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(0);
+    expect(store.staleInfo(A)).toBeDefined();
+    expect(pool.broadcast).toHaveBeenCalledWith(P1, expect.objectContaining({ type: 'invalidate', paths: ['/repo/pkg/src/new.js'] }));
+    runner.dispose(); store.dispose();
+  });
+
+  it('discards a snapshot write held for a running project on Cancel All', async () => {
+    const r = setup();
+    await r.runner.start();
+    await r.runner.runFiles([{ path: A }], 'explicit');
+    await advance();
+    write('change', SNAP);
+    await advance(300);
+    r.runner.cancel('all');
+    r.complete(r.w1, r.w1.runs()[0].runId, { wasInterrupted: true });
+    await advance(3000);
+    expect(r.w1.runs()).toHaveLength(1);
+    r.runner.dispose(); r.store.dispose();
+  });
+
+  it('does not schedule files whose disk read finishes after Cancel All', async () => {
+    const { runner, store, w1 } = setup();
+    let release!: () => void;
+    (fs.promises.readFile as unknown as jest.Mock).mockImplementationOnce(() => new Promise(r => { release = () => r(TEXT); }));
+    await runner.start();
+    store.forProject(P1);
+    write('change', A);
+    await advance(DISK_BATCH);
+    runner.cancel('all');
+    release();
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(0);
+    expect(store.staleInfo(A)).toBeDefined();
+    runner.dispose(); store.dispose();
   });
 
   it('matches exclude globs against workspace-relative paths', async () => {

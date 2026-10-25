@@ -338,6 +338,10 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     if (runId === 'all') {
       this.requestEpoch++;
       for (const projectId of this.liveChanges.keys()) this.clearLiveChanges(projectId);
+      // Batched disk writes are discarded like typed edits: their files are only marked stale.
+      clearTimeout(this.diskTimer);
+      this.diskTimer = undefined;
+      void this.flushDiskChanges(false);
       // Stale marks stay: no run refreshed those files since their last edit.
       for (const q of [...this.queue.values()]) this.dropQueued(q, true);
       for (const run of [...this.active.values()]) this.cancelRun(run, 'cancel all');
@@ -921,10 +925,12 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     return this.registry.projectsFor(p).some(e => (this.snapshotWrites.get(e.spec.id) ?? 0) > now);
   }
 
-  private async flushDiskChanges(): Promise<void> {
+  /** `schedule: false` (Cancel All) applies the batch without starting runs. */
+  private async flushDiskChanges(schedule = true): Promise<void> {
     if (!this.started) { this.diskChanges.clear(); return; }
+    const epoch = this.requestEpoch;
     // A run may be writing a `.snap` it has not reported yet: decide once its project is idle.
-    const running = new Set([...this.active.values()].map(r => r.item.projectId));
+    const running = new Set(schedule ? [...this.active.values()].map(r => r.item.projectId) : []);
     const waiting = (p: string, kind: string) => kind !== 'delete' && p.endsWith('.snap') && this.registry.projectsFor(p).some(e => running.has(e.spec.id));
     const changes = [...this.diskChanges].filter(([p, kind]) => !waiting(p, kind));
     for (const [p] of changes) this.diskChanges.delete(p);
@@ -937,15 +943,17 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     const edited = changes.filter(([p, kind]) => kind !== 'delete' && !open.has(p) && !this.isSnapshotWrite(p)).map(([p]) => p);
     if (!edited.length) return;
     const s = this.settings();
-    if (!s.runOnExternalChanges || s.runMode === 'manual' || edited.length > DISK_BURST_LIMIT) {
+    if (!schedule || !s.runOnExternalChanges || s.runMode === 'manual' || edited.length > DISK_BURST_LIMIT) {
       for (const p of edited) this.store.markStale(p);
-      if (edited.length > DISK_BURST_LIMIT) this.log.info(`${edited.length} files changed on disk: automatic run skipped`);
+      if (schedule && edited.length > DISK_BURST_LIMIT) this.log.info(`${edited.length} files changed on disk: automatic run skipped`);
       return;
     }
-    for (const p of edited) {
+    for (const [i, p] of edited.entries()) {
       let text: string;
       try { text = await fs.promises.readFile(p, 'utf8'); } catch { continue; }
-      if (!this.started || this.liveRunHandled(p, text)) continue;
+      // Cancel All or Stop during the reads: the rest is only marked stale.
+      if (!this.started || epoch !== this.requestEpoch) { for (const q of edited.slice(i)) this.store.markStale(q); return; }
+      if (this.liveRunHandled(p, text)) continue;
       this.store.markStale(p);
       this.scheduleLiveChange(p, () => text, 'onSave', this.settings().onSaveDebounceMs);
     }
