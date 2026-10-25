@@ -19,7 +19,7 @@ import { analyzeChange, type ChangeAnalysis } from './core/changeAnalyzer';
 import { diffLines } from './core/textDiff';
 import { findTestAtLine, testFullNames } from './core/testIds';
 import { parseTestKey } from './core/protocol';
-import { workspaceRelativePosix } from './core/paths';
+import { isUnder, workspaceRelativePosix } from './core/paths';
 import type { ResultStore } from './results/resultStore';
 import { WorkerInitError, type WorkerHandle, type WorkerPool } from './workerPool';
 import { ProjectRegistry, TOOLCHAIN_FILE_NAME } from './discovery/projectRegistry';
@@ -35,6 +35,8 @@ const DISK_BATCH_MS = 50;
 const DISK_BURST_LIMIT = 50;
 /** `.snap` writes this soon after a run wrote snapshots are that run's own. */
 const SNAPSHOT_WRITE_MS = 2000;
+/** A deletion made from VS Code is reported twice (workspace event, then disk watcher). */
+const DELETE_DEDUPE_MS = 2000;
 
 const PRIORITY: Record<RunReason, number> = { explicit: 0, failing: 0, continuous: 1, onType: 2, affected: 2, onSave: 3, open: 4, smartStart: 5 };
 
@@ -114,6 +116,8 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   private excludeMatcher: { globs: readonly string[]; match: (p: string) => boolean } | undefined;
   /** projectId -> until when `.snap` writes are attributed to a run that wrote snapshots. */
   private readonly snapshotWrites = new Map<string, number>();
+  /** Deleted path -> until when another report of the same deletion is ignored. */
+  private readonly recentDeletes = new Map<string, number>();
   private readonly deferredPlanning = new Set<string>();
   private requestEpoch = 0;
   private readonly disposables: vscode.Disposable[] = [];
@@ -142,13 +146,17 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       (projectId, changes) => this.sendOverlay(projectId, changes),
     );
     // Writes by other programs (agents, git, other editors) reach no document event while the file is closed.
-    const diskWatcher = vscode.workspace.createFileSystemWatcher('**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,json,snap}');
+    const diskWatcher = vscode.workspace.createFileSystemWatcher('**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,json,snap}', false, false, true);
+    // A deleted folder is reported once, for the folder itself, which the extension glob never matches.
+    const deleteWatcher = vscode.workspace.createFileSystemWatcher('**/*', true, true, false);
+    const fsPaths = (uris: readonly vscode.Uri[]) => uris.filter(u => u.scheme === 'file').map(u => u.fsPath);
     this.disposables.push(
       this.overlay,
       diskWatcher,
+      deleteWatcher,
       diskWatcher.onDidChange(uri => this.onDiskChange(uri, 'change')),
       diskWatcher.onDidCreate(uri => this.onDiskChange(uri, 'create')),
-      diskWatcher.onDidDelete(uri => this.onDiskChange(uri, 'delete')),
+      deleteWatcher.onDidDelete(uri => this.onDiskChange(uri, 'delete')),
       { dispose: () => clearTimeout(this.diskTimer) },
       { dispose: pool.on(e => this.onPoolEvent(e)) },
       registry.onDidChange(e => this.onRegistryEvent(e)),
@@ -166,8 +174,11 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
         for (const key of this.liveRuns.keys()) if (key.endsWith(`\0${doc.uri.fsPath}`)) this.liveRuns.delete(key);
       }),
       vscode.workspace.onDidCreateFiles(e => this.onFilesChanged(e.files)),
-      vscode.workspace.onDidDeleteFiles(e => this.onFilesChanged(e.files)),
-      vscode.workspace.onDidRenameFiles(e => this.onFilesChanged(e.files.flatMap(f => [f.oldUri, f.newUri]))),
+      vscode.workspace.onDidDeleteFiles(e => { this.onFilesChanged(e.files); this.onFilesDeleted(fsPaths(e.files), true); }),
+      vscode.workspace.onDidRenameFiles(e => {
+        this.onFilesChanged(e.files.flatMap(f => [f.oldUri, f.newUri]));
+        this.onFilesDeleted(fsPaths(e.files.map(f => f.oldUri)), true);
+      }),
       vscode.window.onDidChangeActiveTextEditor(ed => ed && this.onDocumentOpened(ed.document)),
     );
   }
@@ -902,7 +913,9 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
 
   private onDiskChange(uri: vscode.Uri, kind: 'change' | 'create' | 'delete'): void {
     const p = uri.fsPath;
-    if (!this.started || uri.scheme !== 'file' || !this.isInterestingPath(p) || TOOLCHAIN_FILE_NAME.test(path.basename(p))) return;
+    // Deletions include folders, which have no source extension.
+    const tracked = kind === 'delete' ? !p.includes(`${path.sep}node_modules${path.sep}`) && !!this.registry.projectIdFor(p) : this.isInterestingPath(p);
+    if (!this.started || uri.scheme !== 'file' || !tracked || TOOLCHAIN_FILE_NAME.test(path.basename(p))) return;
     const globs = this.settings().discovery.exclude;
     if (this.excludeMatcher?.globs !== globs) this.excludeMatcher = { globs, match: globs.length ? picomatch([...globs], { dot: true }) : () => false };
     if (this.excludeMatcher.match(workspaceRelativePosix(p, (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)))) return;
@@ -938,11 +951,13 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     if (!changes.length) return;
     const added = changes.filter(([, kind]) => kind !== 'change').map(([p]) => vscode.Uri.file(p));
     if (added.length) this.onFilesChanged(added);
+    const s = this.settings();
+    const deleted = changes.filter(([, kind]) => kind === 'delete').map(([p]) => p);
+    if (deleted.length) this.onFilesDeleted(deleted, schedule && s.runOnExternalChanges && changes.length <= DISK_BURST_LIMIT);
     // Open documents report their own saves and reloads.
     const open = new Set(vscode.workspace.textDocuments.filter(d => d.uri.scheme === 'file').map(d => d.uri.fsPath));
     const edited = changes.filter(([p, kind]) => kind !== 'delete' && !open.has(p) && !this.isSnapshotWrite(p)).map(([p]) => p);
     if (!edited.length) return;
-    const s = this.settings();
     if (!schedule || !s.runOnExternalChanges || s.runMode === 'manual' || edited.length > DISK_BURST_LIMIT) {
       for (const p of edited) this.store.markStale(p);
       if (schedule && edited.length > DISK_BURST_LIMIT) this.log.info(`${edited.length} files changed on disk: automatic run skipped`);
@@ -957,6 +972,109 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       this.store.markStale(p);
       this.scheduleLiveChange(p, () => text, 'onSave', this.settings().onSaveDebounceMs);
     }
+  }
+
+  /**
+   * Deleted files and folders (from VS Code, renamed-away paths or the disk watcher): the deleted test
+   * files' results go, and the tests that depended on anything deleted re-run (their imports now fail).
+   */
+  private onFilesDeleted(paths: readonly string[], run: boolean): void {
+    if (!this.started) return;
+    const now = Date.now();
+    for (const [p, until] of this.recentDeletes) if (until <= now) this.recentDeletes.delete(p);
+    const byProject = new Map<string, Set<string>>();
+    for (const p of paths) {
+      // A path that exists again was replaced (atomic write, rename back), not deleted.
+      if (this.recentDeletes.has(p) || p.includes(`${path.sep}node_modules${path.sep}`) || fs.existsSync(p)) continue;
+      this.recentDeletes.set(p, now + DELETE_DEDUPE_MS);
+      for (const entry of this.registry.projectsFor(p)) {
+        const gone = byProject.get(entry.spec.id) ?? new Set<string>();
+        for (const known of this.knownFiles(entry.spec.id)) if (isUnder(known, p)) gone.add(known);
+        byProject.set(entry.spec.id, gone);
+      }
+    }
+    for (const [projectId, gone] of byProject) {
+      for (const p of gone) if (this.store.fileRecord(p, projectId) || this.registry.acceptsTest(projectId, p)) this.forgetTestFile(projectId, p);
+      if (run && gone.size && this.settings().runMode !== 'manual') {
+        void this.runDependents(projectId, [...gone]).catch(error => this.log.warn(`deleted files: ${(error as Error).message}`));
+      }
+    }
+    if (byProject.size) this.emitState();
+  }
+
+  /** Every file the project's results or graphs know (deleted folders expand to these). */
+  private knownFiles(projectId: string): Set<string> {
+    const store = this.store.forProject(projectId);
+    return new Set([
+      ...store.allFiles().filter(f => f.projectId === projectId).map(f => f.path),
+      ...store.execBy().keys(), ...store.loadedBy().keys(),
+      ...this.inverseGraph.get(projectId)?.keys() ?? [], ...this.graphTestFiles.get(projectId) ?? [],
+    ]);
+  }
+
+  private forgetTestFile(projectId: string, p: string): void {
+    const key = `${projectId}\0${p}`;
+    const queued = this.queue.get(key);
+    if (queued) this.dropQueued(queued, true);
+    const running = this.activeByFile.get(key);
+    if (running) this.cancelRun(running, 'file deleted');
+    this.deferred.delete(key);
+    this.liveRuns.delete(key);
+    const batch = this.liveChanges.get(projectId);
+    if (batch?.changes.delete(p)) {
+      batch.revision++;
+      if (!batch.changes.size) this.clearLiveChanges(projectId);
+    }
+    for (const byProject of this.continuous.values()) {
+      const watched = byProject.get(projectId);
+      if (watched) byProject.set(projectId, watched.filter(sel => sel.path !== p));
+    }
+    this.graphTestFiles.get(projectId)?.delete(p);
+    // The path is gone for every project, so the shared parse (CodeLens, declaration lines) goes too.
+    this.store.clearFile(p);
+    if (!vscode.workspace.textDocuments.some(d => d.uri.scheme === 'file' && d.uri.fsPath === p)) this.docs.forget(p);
+  }
+
+  /** Re-runs the tests that depended on deleted files, as whole files (capped like an edit). */
+  private async runDependents(projectId: string, gone: readonly string[]): Promise<void> {
+    const entry = this.registry.get(projectId);
+    if (!entry || entry.spec.status !== 'ok') return;
+    const s = this.settings();
+    const store = this.store.forProject(projectId);
+    const testFiles = new Set(store.allFiles().filter(f => f.projectId === projectId).map(f => f.path));
+    for (const f of this.graphTestFiles.get(projectId) ?? []) testFiles.add(f);
+    const failingTestsByFile = new Map<string, Set<string>>();
+    for (const t of store.failingTests()) failingTestsByFile.set(t.path, (failingTestsByFile.get(t.path) ?? new Set<string>()).add(t.testKey));
+    const goneSet = new Set(gone);
+    const selections = new Map<string, RunTestSelection>();
+    for (const p of gone) {
+      const result = selectAffected({
+        changedFile: p,
+        changedLines: null,
+        isTestFile: this.registry.acceptsTest(projectId, p),
+        deleted: true,
+        execBy: store.execBy(),
+        loadedBy: store.loadedBy(),
+        inverseStaticGraph: this.inverseGraph.get(projectId) ?? null,
+        testFiles,
+        runtimeTrackedTestFiles: new Set([...testFiles].filter(f => store.coveredSourcesOf(f).size > 0)),
+        failingTestsByFile,
+        coverage: null,
+        toolchainFiles: this.registry.toolchainFiles(projectId),
+        settings: { maxTestFilesPerEdit: 0, alwaysRunFailing: s.affected.alwaysRunFailing, useStaticGraph: s.affected.useStaticGraph, trackFileLoading: s.affected.trackFileLoading },
+      });
+      this.log.info(`affected(${path.basename(p)}, deleted): ${result.kind}${result.kind === 'runs' ? ` ${result.runs.length} file(s)` : ''} (${result.reason})`);
+      if (result.kind === 'invalidateConfig') { this.registry.invalidate(projectId, [p]); return; }
+      if (result.kind === 'runs') for (const r of result.runs) if (!goneSet.has(r.path)) selections.set(r.path, mergeSelections(selections.get(r.path) ?? r, r));
+    }
+    const cap = s.liveRun.maxTestFilesPerEdit > 0 ? s.liveRun.maxTestFilesPerEdit : selections.size;
+    const ordered = [...selections.values()];
+    for (const d of ordered.slice(cap)) {
+      const key = `${projectId}\0${d.path}`;
+      this.deferred.set(key, { ...mergeSelections(this.deferred.get(key) ?? d, d), projectId });
+    }
+    const runs = [...ordered.slice(0, cap), ...this.continuousSelections(projectId)];
+    if (runs.length) await this.runFiles(runs.map(r => ({ ...r, projectId })), 'onSave');
   }
 
   private scheduleLiveChange(p: string, text: () => string, reason: 'onType' | 'onSave', delay: number): void {

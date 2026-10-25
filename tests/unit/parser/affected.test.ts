@@ -241,3 +241,32 @@ describe('narrowByFunctions', () => {
     if (result.kind === 'runs') expect(result.reason).toContain('narrowed');
   });
 });
+
+describe('selectAffected: deleted files', () => {
+  it('re-runs every test file that executed a deleted source as a whole file', () => {
+    const execBy = setMap([[SRC, [key(T1, 'adds'), key(T2, 'greets')]]]);
+    const result = selectAffected(base({ deleted: true, changedLines: null, execBy, failingTestsByFile: new Map() }));
+    expect(result).toMatchObject({ kind: 'runs', runs: expect.arrayContaining([{ path: T1 }, { path: T2 }]) });
+    expect((result as { runs: unknown[] }).runs).toHaveLength(2);
+  });
+
+  it('adds static importers and loaders of a deleted source', () => {
+    const result = selectAffected(base({
+      deleted: true, changedLines: null,
+      loadedBy: setMap([[SRC, [T2]]]),
+      inverseStaticGraph: setMap([[SRC, ['/repo/src/mid.ts']], ['/repo/src/mid.ts', [T3]]]),
+    }));
+    expect(result).toMatchObject({ kind: 'runs' });
+    expect((result as { runs: Array<{ path: string }> }).runs.map(r => r.path).sort()).toEqual([T2, T3].sort());
+  });
+
+  it('never asks Jest to relate a deleted file without dependency data', () => {
+    expect(selectAffected(base({ deleted: true, changedLines: null, inverseStaticGraph: null }))).toMatchObject({ kind: 'none' });
+  });
+
+  it('does not select a deleted test file, only the specs that load it', () => {
+    expect(selectAffected(base({ changedFile: T1, isTestFile: true, deleted: true }))).toMatchObject({ kind: 'none' });
+    const result = selectAffected(base({ changedFile: HELPER, isTestFile: true, deleted: true, loadedBy: setMap([[HELPER, [T1]]]) }));
+    expect(result).toMatchObject({ kind: 'runs', runs: [{ path: T1 }] });
+  });
+});
