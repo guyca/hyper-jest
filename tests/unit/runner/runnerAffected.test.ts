@@ -698,7 +698,7 @@ describe('RunCoordinator disk changes made outside VS Code', () => {
   let disk: Map<string, string>;
   beforeEach(() => {
     jest.useFakeTimers();
-    disk = new Map([[A, TEXT], [SRC, SRC_TEXT]]);
+    disk = new Map([[A, TEXT], [SRC, SRC_TEXT], ['/repo/pkg/__snapshots__/a.test.js.snap', 'exports[`x 1`] = `1`;\n']]);
     jest.spyOn(fs.promises, 'readFile').mockImplementation((async (p: string) => {
       const text = disk.get(p);
       if (text === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
@@ -776,6 +776,37 @@ describe('RunCoordinator disk changes made outside VS Code', () => {
     runner.dispose(); store.dispose();
   });
 
+  it('does not run reloaded documents when runOnExternalChanges is off, in on-type mode too', async () => {
+    const { runner, store, w1 } = setup({ runOnExternalChanges: false });
+    await runner.start();
+    store.forProject(P1);
+    const doc = open(A, TEXT);
+    fire('change', { document: doc, contentChanges: [{}] });
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(0);
+    expect(store.staleInfo(A)).toBeDefined();
+    runner.dispose(); store.dispose();
+  });
+
+  it('treats an undo back to the saved text as an ordinary edit', async () => {
+    const undo = 1; // TextDocumentChangeReason.Undo
+    const onSave = setup({ runMode: 'onSave' });
+    await onSave.runner.start();
+    fire('change', { document: open(A, TEXT), contentChanges: [{}], reason: undo });
+    await advance(1000);
+    expect(onSave.w1.runs()).toHaveLength(0);
+    onSave.runner.dispose(); onSave.store.dispose();
+    __state.textDocuments.length = 0;
+    const onType = setup();
+    await onType.runner.start();
+    fire('change', { document: open(A, TEXT), contentChanges: [{}], reason: undo });
+    await advance(499);
+    expect(onType.w1.runs()).toHaveLength(0);
+    await advance(1);
+    expect(onType.w1.runs()).toHaveLength(1);
+    onType.runner.dispose(); onType.store.dispose();
+  });
+
   it('keeps on-save mode waiting for a save while the buffer is dirty', async () => {
     const { runner, store, w1 } = setup({ runMode: 'onSave' });
     await runner.start();
@@ -821,6 +852,69 @@ describe('RunCoordinator disk changes made outside VS Code', () => {
     expect(cliEngine.findRelatedTests).not.toHaveBeenCalled();
     expect(store.staleInfo(paths[0])).toBeDefined();
     expect(log.info).toHaveBeenCalledWith('51 files changed on disk: automatic run skipped');
+    runner.dispose(); store.dispose();
+  });
+
+  const SNAP = '/repo/pkg/__snapshots__/a.test.js.snap';
+  const fileResult = (r: ReturnType<typeof setup>, snapshot: Record<string, unknown>) => {
+    const runId = r.w1.runs()[0].runId;
+    r.workerMsg(r.w1, { type: 'fileResult', runId, path: A, status: 'passed', numPassing: 1, numFailing: 0, numPending: 0, numTodo: 0,
+      snapshot: { added: 0, matched: 0, unmatched: 0, updated: 0, unchecked: 0, uncheckedKeys: [], fileDeleted: false, ...snapshot } } as any);
+    r.complete(r.w1, runId);
+  };
+
+  it('ignores snapshot files written by its own runs', async () => {
+    const r = setup();
+    await r.runner.start();
+    await r.runner.runFiles([{ path: A }], 'explicit');
+    await advance();
+    fileResult(r, { added: 1 });
+    await advance();
+    write('create', SNAP);
+    await advance(100);
+    expect(r.w1.runs()).toHaveLength(1);
+    await advance(2000);
+    write('change', SNAP);
+    await advance(100);
+    expect(r.w1.runs()).toHaveLength(2);
+    expect(r.w1.runs()[1].tests.map(t => t.path)).toEqual([A]);
+    r.runner.dispose(); r.store.dispose();
+  });
+
+  it('waits for a running project to report before judging a snapshot write', async () => {
+    const r = setup();
+    await r.runner.start();
+    await r.runner.runFiles([{ path: A }], 'explicit');
+    await advance();
+    write('change', SNAP);
+    await advance(300);
+    fileResult(r, { updated: 1 });
+    await advance(1000);
+    expect(r.w1.runs()).toHaveLength(1);
+    r.runner.dispose(); r.store.dispose();
+  });
+
+  it('still runs snapshot files changed by others after a run that wrote none', async () => {
+    const r = setup();
+    await r.runner.start();
+    await r.runner.runFiles([{ path: A }], 'explicit');
+    await advance();
+    write('change', SNAP);
+    fileResult(r, { matched: 1 });
+    await advance(1000);
+    expect(r.w1.runs()).toHaveLength(2);
+    r.runner.dispose(); r.store.dispose();
+  });
+
+  it('matches exclude globs against workspace-relative paths', async () => {
+    const { runner, store, pool } = setup({ discovery: { ...DEFAULT_SETTINGS.discovery, exclude: ['pkg/generated/**'] } });
+    (vscode.workspace as any).workspaceFolders = [{ uri: Uri.file('/repo') }];
+    try {
+      await runner.start();
+      write('create', '/repo/pkg/generated/x.js');
+      await advance(100);
+      expect(pool.broadcast).not.toHaveBeenCalled();
+    } finally { delete (vscode.workspace as any).workspaceFolders; }
     runner.dispose(); store.dispose();
   });
 

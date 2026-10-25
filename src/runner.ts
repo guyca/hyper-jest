@@ -12,13 +12,14 @@ import * as vscode from 'vscode';
 import type { Logger } from './core/logger';
 import type { HyperJestSettings, RunMode } from './core/settingsModel';
 import {
-  PROTOCOL_VERSION, type OverlayChange, type RunMsg, type RunTestSelection, type UpdateSnapshotMode, type WorkerToHost,
+  PROTOCOL_VERSION, type OverlayChange, type RunMsg, type RunTestSelection, type SnapshotSummary, type UpdateSnapshotMode, type WorkerToHost,
 } from './core/protocol';
 import { selectAffected, type AffectedResult } from './core/affected';
 import { analyzeChange, type ChangeAnalysis } from './core/changeAnalyzer';
 import { diffLines } from './core/textDiff';
 import { findTestAtLine, testFullNames } from './core/testIds';
 import { parseTestKey } from './core/protocol';
+import { workspaceRelativePosix } from './core/paths';
 import type { ResultStore } from './results/resultStore';
 import { WorkerInitError, type WorkerHandle, type WorkerPool } from './workerPool';
 import { ProjectRegistry, TOOLCHAIN_FILE_NAME } from './discovery/projectRegistry';
@@ -32,6 +33,8 @@ import type { CancellationLike, RunHandle, RunOptions, RunOutcome, RunReason, Ru
 const DISK_BATCH_MS = 50;
 /** A disk batch larger than this (branch switch, stash, codegen) only marks results stale. */
 const DISK_BURST_LIMIT = 50;
+/** `.snap` writes this soon after a run wrote snapshots are that run's own. */
+const SNAPSHOT_WRITE_MS = 2000;
 
 const PRIORITY: Record<RunReason, number> = { explicit: 0, failing: 0, continuous: 1, onType: 2, affected: 2, onSave: 3, open: 4, smartStart: 5 };
 
@@ -79,6 +82,11 @@ interface LiveBatch {
   changes: Map<string, { text: () => string; reason: 'onType' | 'onSave'; readyAt: number }>;
 }
 
+/** Whether a file's run wrote its snapshot file (new or updated snapshots, obsolete ones removed). */
+function wroteSnapshots(s: SnapshotSummary | undefined, mode: UpdateSnapshotMode): boolean {
+  return !!s && (s.added > 0 || s.updated > 0 || s.fileDeleted || (mode === 'all' && s.unchecked > 0));
+}
+
 let seq = 0;
 let groupSeq = 0;
 
@@ -104,6 +112,8 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   private readonly diskChanges = new Map<string, 'change' | 'create' | 'delete'>();
   private diskTimer: NodeJS.Timeout | undefined;
   private excludeMatcher: { globs: readonly string[]; match: (p: string) => boolean } | undefined;
+  /** projectId -> until when `.snap` writes are attributed to a run that wrote snapshots. */
+  private readonly snapshotWrites = new Map<string, number>();
   private readonly deferredPlanning = new Set<string>();
   private requestEpoch = 0;
   private readonly disposables: vscode.Disposable[] = [];
@@ -142,7 +152,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       { dispose: () => clearTimeout(this.diskTimer) },
       { dispose: pool.on(e => this.onPoolEvent(e)) },
       registry.onDidChange(e => this.onRegistryEvent(e)),
-      vscode.workspace.onDidChangeTextDocument(e => this.onDocumentChanged(e.document, e.contentChanges.length > 0)),
+      vscode.workspace.onDidChangeTextDocument(e => this.onDocumentChanged(e.document, e.contentChanges.length > 0, e.reason)),
       vscode.workspace.onDidSaveTextDocument(doc => this.onDocumentSaved(doc)),
       vscode.workspace.onDidOpenTextDocument(doc => this.onDocumentOpened(doc)),
       // Virtual documents (git:, diff views) share the fsPath of the real file; only the real one owns its parse.
@@ -714,6 +724,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       run.finish(interrupted, msg.error);
       return;
     }
+    if (msg.type === 'fileResult' && wroteSnapshots(msg.snapshot, run.item.updateSnapshot)) this.snapshotWrites.set(projectId, Date.now() + SNAPSHOT_WRITE_MS);
     const scoped = scopedMessage(msg, this.registry.get(projectId)?.spec.scope);
     if (scoped) this.store.apply(scoped, projectId);
   }
@@ -850,16 +861,16 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     }
   }
 
-  private onDocumentChanged(doc: vscode.TextDocument, hasChanges: boolean): void {
+  private onDocumentChanged(doc: vscode.TextDocument, hasChanges: boolean, reason?: vscode.TextDocumentChangeReason): void {
     if (!hasChanges || !this.started || !this.isInteresting(doc)) return;
     const p = doc.uri.fsPath;
     const s = this.settings();
     if (this.registry.isTestFile(p)) this.docs.update(p, doc.getText());
     this.store.markStale(p);
-    // A clean buffer matches the disk: VS Code reloaded a file another program wrote (or an undo
-    // reached the saved text). That is a save, in every run mode but manual.
-    if (!doc.isDirty && s.runOnExternalChanges) {
-      if (s.runMode !== 'manual') this.scheduleLiveChange(p, () => doc.getText(), 'onSave', s.onSaveDebounceMs);
+    // A clean buffer no undo/redo produced: VS Code reloaded a file another program wrote. That is a
+    // save in every run mode but manual (an undo back to the saved text is an ordinary edit).
+    if (!doc.isDirty && reason === undefined) {
+      if (s.runOnExternalChanges && s.runMode !== 'manual' && !this.isSnapshotWrite(p)) this.scheduleLiveChange(p, () => doc.getText(), 'onSave', s.onSaveDebounceMs);
       return;
     }
     if (s.runMode !== 'onType') {
@@ -890,24 +901,40 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     if (!this.started || uri.scheme !== 'file' || !this.isInterestingPath(p) || TOOLCHAIN_FILE_NAME.test(path.basename(p))) return;
     const globs = this.settings().discovery.exclude;
     if (this.excludeMatcher?.globs !== globs) this.excludeMatcher = { globs, match: globs.length ? picomatch([...globs], { dot: true }) : () => false };
-    if (this.excludeMatcher.match(p)) return;
+    if (this.excludeMatcher.match(workspaceRelativePosix(p, (vscode.workspace.workspaceFolders ?? []).map(f => f.uri.fsPath)))) return;
     // An atomic write (temp file renamed over the target) reports a create, possibly followed by a change.
     this.diskChanges.set(p, kind === 'change' && this.diskChanges.get(p) === 'create' ? 'create' : kind);
+    this.scheduleDiskFlush();
+  }
+
+  private scheduleDiskFlush(delay = DISK_BATCH_MS): void {
     this.diskTimer ??= setTimeout(() => {
       this.diskTimer = undefined;
       void this.flushDiskChanges().catch(error => this.log.warn(`disk changes: ${(error as Error).message}`));
-    }, DISK_BATCH_MS);
+    }, delay);
+  }
+
+  /** A `.snap` write by a run of its project (Jest writes snapshots before it reports the file). */
+  private isSnapshotWrite(p: string): boolean {
+    if (!p.endsWith('.snap')) return false;
+    const now = Date.now();
+    return this.registry.projectsFor(p).some(e => (this.snapshotWrites.get(e.spec.id) ?? 0) > now);
   }
 
   private async flushDiskChanges(): Promise<void> {
-    const changes = [...this.diskChanges];
-    this.diskChanges.clear();
-    if (!this.started) return;
+    if (!this.started) { this.diskChanges.clear(); return; }
+    // A run may be writing a `.snap` it has not reported yet: decide once its project is idle.
+    const running = new Set([...this.active.values()].map(r => r.item.projectId));
+    const waiting = (p: string, kind: string) => kind !== 'delete' && p.endsWith('.snap') && this.registry.projectsFor(p).some(e => running.has(e.spec.id));
+    const changes = [...this.diskChanges].filter(([p, kind]) => !waiting(p, kind));
+    for (const [p] of changes) this.diskChanges.delete(p);
+    if (this.diskChanges.size) this.scheduleDiskFlush(SNAPSHOT_WRITE_MS / 4);
+    if (!changes.length) return;
     const added = changes.filter(([, kind]) => kind !== 'change').map(([p]) => vscode.Uri.file(p));
     if (added.length) this.onFilesChanged(added);
     // Open documents report their own saves and reloads.
     const open = new Set(vscode.workspace.textDocuments.filter(d => d.uri.scheme === 'file').map(d => d.uri.fsPath));
-    const edited = changes.filter(([p, kind]) => kind !== 'delete' && !open.has(p)).map(([p]) => p);
+    const edited = changes.filter(([p, kind]) => kind !== 'delete' && !open.has(p) && !this.isSnapshotWrite(p)).map(([p]) => p);
     if (!edited.length) return;
     const s = this.settings();
     if (!s.runOnExternalChanges || s.runMode === 'manual' || edited.length > DISK_BURST_LIMIT) {
