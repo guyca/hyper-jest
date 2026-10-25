@@ -25,6 +25,8 @@ jest.mock('../../../src/cliEngine', () => ({ runCli: jest.fn(), findRelatedTests
 jest.mock('../../../src/debug', () => ({ startDebugSession: jest.fn(async () => undefined) }));
 
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { RunCoordinator } from '../../../src/runner';
 import { ResultStore } from '../../../src/results/resultStore';
@@ -970,6 +972,105 @@ describe('RunCoordinator disk changes made outside VS Code', () => {
     await advance(100);
     expect(pool.broadcast).not.toHaveBeenCalled();
     expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+});
+
+describe('RunCoordinator deleted files', () => {
+  const B = '/repo/pkg/src/b.test.js';
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); jest.restoreAllMocks(); jest.clearAllMocks(); });
+  const advance = (ms = 0) => jest.advanceTimersByTimeAsync(ms);
+  const diskDelete = (...paths: string[]) => { for (const p of paths) for (const w of [...__state.watchers]) w.fire('delete', Uri.file(p)); };
+  /** A finished run of `file` with one failing test. */
+  const seedFailing = (store: ResultStore, file: string) => {
+    const apply = (m: any) => store.apply({ v: PROTOCOL_VERSION, ...m }, P1);
+    const runId = `seed-${file}`;
+    const testKey = makeTestKey(file, 'breaks', 0);
+    store.registerRun(runId, [{ path: file }]);
+    apply({ type: 'fileStart', runId, path: file });
+    apply({ type: 'testResult', runId, path: file, testKey, fullName: 'breaks', title: 'breaks', ancestorTitles: [], status: 'failed', duration: 1, location: null, failures: [{ message: 'boom' }], invocations: 1 });
+    apply({ type: 'fileResult', runId, path: file, status: 'failed', numPassing: 0, numFailing: 1, numPending: 0, numTodo: 0 });
+    apply({ type: 'runComplete', runId, wasInterrupted: false });
+  };
+
+  it('drops the results of a test file deleted on disk without running it', async () => {
+    const { runner, store, w1 } = setup();
+    await runner.start();
+    seedFailing(store, A);
+    expect(store.failingTests()).toHaveLength(1);
+    diskDelete(A);
+    await advance(1000);
+    expect(store.fileRecord(A, P1)).toBeUndefined();
+    expect(store.failingTests()).toHaveLength(0);
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+
+  it('re-runs the tests that import a source deleted from VS Code, once', async () => {
+    const { runner, store, w1, workerMsg, pool, completeAll } = setup();
+    await runner.start();
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC] }, testFiles: [A], unresolved: 0 } as any);
+    fire('delete', { files: [Uri.file(SRC)] });
+    await advance(10);
+    completeAll();
+    diskDelete(SRC);
+    await advance(1000);
+    expect(pool.broadcast).toHaveBeenCalledWith(P1, expect.objectContaining({ type: 'invalidate', paths: [SRC] }));
+    expect(w1.runs()).toHaveLength(1);
+    expect(w1.runs()[0].tests).toEqual([{ path: A }]);
+    runner.dispose(); store.dispose();
+  });
+
+  it('expands a deleted folder to the test and source files it contained', async () => {
+    const { runner, store, w1, workerMsg } = setup();
+    await runner.start();
+    seedFailing(store, B);
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC], [B]: [] }, testFiles: [A, B], unresolved: 0 } as any);
+    diskDelete('/repo/pkg/src');
+    await advance(1000);
+    expect(store.fileRecord(B, P1)).toBeUndefined();
+    expect(w1.runs().flatMap(r => r.tests.map(t => t.path))).toEqual([A]);
+    runner.dispose(); store.dispose();
+  });
+
+  it('treats the old path of a renamed test file as deleted', async () => {
+    const { runner, store } = setup();
+    await runner.start();
+    seedFailing(store, A);
+    fire('rename', { files: [{ oldUri: Uri.file(A), newUri: Uri.file('/repo/pkg/renamed.test.js') }] });
+    await advance(1000);
+    expect(store.fileRecord(A, P1)).toBeUndefined();
+    runner.dispose(); store.dispose();
+  });
+
+  it('clears results but runs nothing in manual mode', async () => {
+    const { runner, store, w1, workerMsg } = setup({ runMode: 'manual' });
+    await runner.start();
+    seedFailing(store, A);
+    workerMsg(w1, { type: 'graphResult', forward: { [A]: [SRC] }, testFiles: [A], unresolved: 0 } as any);
+    fire('delete', { files: [Uri.file(SRC), Uri.file(B)] });
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+
+  it('ignores a delete event for a path that exists again (atomic replace)', async () => {
+    const { runner, store, w1, registry, entries } = setup();
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hyperjest-delete-')));
+    const file = path.join(dir, 'kept.test.js');
+    fs.writeFileSync(file, TEXT);
+    const inDir = (p: string) => p === dir || p.startsWith(`${dir}${path.sep}`);
+    registry.projectIdFor = (p: string) => (inDir(p) ? P1 : undefined);
+    registry.projectsFor = (p: string) => (inDir(p) ? [entries.get(P1)] : []);
+    try {
+      await runner.start();
+      seedFailing(store, file);
+      diskDelete(file);
+      await advance(1000);
+      expect(store.fileRecord(file, P1)).toBeDefined();
+      expect(w1.runs()).toHaveLength(0);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     runner.dispose(); store.dispose();
   });
 });

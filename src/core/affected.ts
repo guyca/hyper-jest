@@ -55,6 +55,8 @@ export interface AffectedInput {
   changedLines: readonly LineChange[] | null;
   /** Override when the host knows the file's test-ness (default: `testFiles.has(changedFile)`). */
   isTestFile?: boolean;
+  /** The file was deleted: it is not selected itself, and its dependents re-run as whole files (their imports fail). */
+  deleted?: boolean;
   /** `analyzeChange()` result for a test-file edit; undefined = whole file. */
   analysis?: ChangeAnalysis;
   /** sourceFile -> testKeys that executed it (per-test coverage). */
@@ -121,9 +123,11 @@ function selectForTestFile(input: AffectedInput): AffectedResult {
   const acc = new SelectionAccumulator();
   const counts = emptyCounts();
 
-  if (input.analysis?.kind === 'singleTest') acc.addNames(file, input.analysis.fullNames, 0);
-  else acc.addWhole(file, 0);
-  counts.self = 1;
+  if (!input.deleted) {
+    if (input.analysis?.kind === 'singleTest') acc.addNames(file, input.analysis.fullNames, 0);
+    else acc.addWhole(file, 0);
+    counts.self = 1;
+  }
 
   // Specs that import this file (shared behaviours, helper specs) re-run as whole files.
   if (input.settings.trackFileLoading) {
@@ -138,8 +142,9 @@ function selectForTestFile(input: AffectedInput): AffectedResult {
       counts.staticGraph++;
     }
   }
+  if (input.deleted && acc.size === 0) return { kind: 'none', reason: `nothing depends on ${baseName(file)}` };
   counts.failingAdded = addFailing(acc, input);
-  return finish(acc, counts, input.settings.maxTestFilesPerEdit, describeTestEdit(input));
+  return finish(acc, counts, input.settings.maxTestFilesPerEdit, input.deleted ? 'test file deleted' : describeTestEdit(input));
 }
 
 function describeTestEdit(input: AffectedInput): string {
@@ -161,7 +166,9 @@ function selectForSourceFile(input: AffectedInput): AffectedResult {
 
   // A: tests that executed the file (optionally narrowed to the edited functions).
   const executed = input.execBy.get(file);
-  if (executed && executed.size > 0) {
+  if (executed && executed.size > 0 && input.deleted) {
+    for (const testFile of groupKeysByFile(executed).keys()) { acc.addWhole(testFile, 1); counts.execBy++; }
+  } else if (executed && executed.size > 0) {
     const narrowed = input.sourceSelection
       ? { keys: new Set([...executed].filter(key => input.sourceSelection!.tests.has(key))), narrowed: [...executed].some(key => !input.sourceSelection!.tests.has(key)) }
       : narrowByFunctions(executed, input.changedLines, input.coverage);
@@ -202,7 +209,8 @@ function selectForSourceFile(input: AffectedInput): AffectedResult {
 
   if (acc.size === 0) {
     const name = baseName(file);
-    if (!graphConsulted && !input.loadedBy.get(file)?.size && !input.execBy.get(file)?.size) {
+    // Jest cannot relate a deleted file to its tests.
+    if (!input.deleted && !graphConsulted && !input.loadedBy.get(file)?.size && !input.execBy.get(file)?.size) {
       return { kind: 'discover', reason: `no runtime or static dependency data yet for ${name}` };
     }
     return { kind: 'none', reason: `no tests cover ${name}` };

@@ -24,6 +24,11 @@ picked up by a file watcher; an open file without unsaved edits runs when VS Cod
 than 50 files changing at once (a branch switch, a stash) only marks results stale. Set
 `hyperjest.runOnExternalChanges: false` to turn this off; reloaded files are then only marked stale.
 
+Deleting a test file (or a folder, or renaming one away) removes its results, including its failures in
+Problems and the status bar. Tests that executed, loaded or import a deleted file re-run as whole files,
+since their imports now fail. Manual mode, and `runOnExternalChanges: false` for deletions made outside
+VS Code, only remove the results.
+
 ## Affected test selection
 
 Source-function body edits rerun only the tests that executed those functions when reliable per-test
