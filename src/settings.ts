@@ -48,6 +48,7 @@ export function readSettings(cfg: { get<T>(key: string, defaultValue: T): T }): 
     runMode: g('runMode', d.runMode),
     onTypeDebounceMs: g('onTypeDebounceMs', d.onTypeDebounceMs),
     onSaveDebounceMs: g('onSaveDebounceMs', d.onSaveDebounceMs),
+    runOnExternalChanges: g('runOnExternalChanges', d.runOnExternalChanges),
     smartStart: g('smartStart', d.smartStart),
     liveRun: { maxTestFilesPerEdit: g('liveRun.maxTestFilesPerEdit', d.liveRun.maxTestFilesPerEdit) },
     engine: g('engine', d.engine),

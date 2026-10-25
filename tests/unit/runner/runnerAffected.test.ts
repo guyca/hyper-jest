@@ -24,6 +24,7 @@ jest.mock('vscode', () => {
 jest.mock('../../../src/cliEngine', () => ({ runCli: jest.fn(), findRelatedTests: jest.fn(async () => []) }));
 jest.mock('../../../src/debug', () => ({ startDebugSession: jest.fn(async () => undefined) }));
 
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { RunCoordinator } from '../../../src/runner';
 import { ResultStore } from '../../../src/results/resultStore';
@@ -58,6 +59,7 @@ class FakeWorker {
 function setup(overrides: Partial<HyperJestSettings> = {}) {
   for (const k of Object.keys(handlers)) delete handlers[k];
   __state.textDocuments.length = 0;
+  __state.watchers.length = 0;
   const settings: HyperJestSettings = { ...DEFAULT_SETTINGS, smartStart: 'never', engine: 'warm' as any, onSaveDebounceMs: 0, ...overrides };
   let poolListener: (e: any) => void = () => undefined;
   let registryListener: (e: any) => void = () => undefined;
@@ -688,5 +690,147 @@ describe('RunCoordinator worker messages', () => {
     expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('a.test.js'));
     finish();
     await h.done;
+  });
+});
+
+describe('RunCoordinator disk changes made outside VS Code', () => {
+  const SRC_TEXT = 'module.exports = 2;\n';
+  let disk: Map<string, string>;
+  beforeEach(() => {
+    jest.useFakeTimers();
+    disk = new Map([[A, TEXT], [SRC, SRC_TEXT]]);
+    jest.spyOn(fs.promises, 'readFile').mockImplementation((async (p: string) => {
+      const text = disk.get(p);
+      if (text === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return text;
+    }) as any);
+  });
+  afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); jest.restoreAllMocks(); jest.clearAllMocks(); });
+  const advance = (ms = 0) => jest.advanceTimersByTimeAsync(ms);
+  const write = (kind: 'change' | 'create' | 'delete', ...paths: string[]) => {
+    for (const p of paths) for (const w of [...__state.watchers]) w.fire(kind, Uri.file(p));
+  };
+  const open = (p: string, text: string, isDirty = false) => {
+    const doc = Object.assign(makeDocument(p, text), { isDirty });
+    __state.textDocuments.push(doc);
+    return doc;
+  };
+
+  it('runs a closed test file rewritten on disk', async () => {
+    const { runner, store, w1 } = setup();
+    await runner.start();
+    write('change', A);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(1);
+    expect(w1.runs()[0].tests.map(t => t.path)).toEqual([A]);
+    runner.dispose(); store.dispose();
+  });
+
+  it('runs the tests related to a closed source file rewritten on disk', async () => {
+    const { runner, store, w1 } = setup();
+    (cliEngine.findRelatedTests as jest.Mock).mockResolvedValueOnce([A]);
+    await runner.start();
+    write('change', SRC);
+    await advance(100);
+    expect(cliEngine.findRelatedTests).toHaveBeenCalledWith(expect.anything(), [SRC], expect.any(String), expect.anything(), expect.anything());
+    expect(w1.runs().flatMap(r => r.tests.map(t => t.path))).toEqual([A]);
+    runner.dispose(); store.dispose();
+  });
+
+  it('coalesces an atomic write and skips text that already ran', async () => {
+    const { runner, store, w1, complete } = setup();
+    await runner.start();
+    write('create', A);
+    write('change', A);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(1);
+    complete(w1, w1.runs()[0].runId);
+    await advance();
+    write('change', A);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(1);
+    disk.set(A, TEXT.replace('1', '2'));
+    write('change', A);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(2);
+    runner.dispose(); store.dispose();
+  });
+
+  it('leaves open documents to their own events', async () => {
+    const { runner, store, w1 } = setup();
+    await runner.start();
+    open(A, TEXT);
+    write('change', A);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+
+  it('runs an open clean document that VS Code reloaded, even in on-save mode', async () => {
+    const { runner, store, w1 } = setup({ runMode: 'onSave' });
+    await runner.start();
+    const doc = open(A, TEXT);
+    fire('change', { document: doc, contentChanges: [{}] });
+    await advance(100);
+    expect(w1.runs()).toHaveLength(1);
+    runner.dispose(); store.dispose();
+  });
+
+  it('keeps on-save mode waiting for a save while the buffer is dirty', async () => {
+    const { runner, store, w1 } = setup({ runMode: 'onSave' });
+    await runner.start();
+    const doc = open(A, TEXT, true);
+    fire('change', { document: doc, contentChanges: [{}] });
+    await advance(1000);
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
+  });
+
+  it.each([
+    ['manual mode', { runMode: 'manual' as const }],
+    ['runOnExternalChanges off', { runOnExternalChanges: false }],
+  ])('only marks results stale in %s', async (_name, overrides) => {
+    const { runner, store, w1 } = setup(overrides);
+    await runner.start();
+    store.forProject(P1);
+    write('change', A);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(0);
+    expect(store.staleInfo(A)).toBeDefined();
+    runner.dispose(); store.dispose();
+  });
+
+  it('invalidates worker haste maps for files created or deleted on disk', async () => {
+    const { runner, store, pool } = setup();
+    await runner.start();
+    write('create', '/repo/pkg/src/new.js');
+    write('delete', SRC);
+    await advance(100);
+    expect(pool.broadcast).toHaveBeenCalledWith(P1, { v: PROTOCOL_VERSION, type: 'invalidate', reason: 'files', paths: ['/repo/pkg/src/new.js', SRC] });
+    runner.dispose(); store.dispose();
+  });
+
+  it('skips automatic runs for a burst of disk changes', async () => {
+    const { runner, store, w1, log } = setup();
+    await runner.start();
+    store.forProject(P1);
+    const paths = Array.from({ length: 51 }, (_, i) => `/repo/pkg/src/f${i}.js`);
+    write('change', ...paths);
+    await advance(100);
+    expect(w1.runs()).toHaveLength(0);
+    expect(cliEngine.findRelatedTests).not.toHaveBeenCalled();
+    expect(store.staleInfo(paths[0])).toBeDefined();
+    expect(log.info).toHaveBeenCalledWith('51 files changed on disk: automatic run skipped');
+    runner.dispose(); store.dispose();
+  });
+
+  it('ignores toolchain, excluded, node_modules and unowned files', async () => {
+    const { runner, store, pool, w1 } = setup();
+    await runner.start();
+    write('create', '/repo/pkg/package.json', '/repo/pkg/tsconfig.json', '/repo/pkg/jest.config.js', '/repo/pkg/coverage/lcov-report/x.js', '/repo/pkg/node_modules/x/index.js', '/elsewhere/z.js');
+    await advance(100);
+    expect(pool.broadcast).not.toHaveBeenCalled();
+    expect(w1.runs()).toHaveLength(0);
+    runner.dispose(); store.dispose();
   });
 });

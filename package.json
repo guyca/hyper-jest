@@ -470,6 +470,11 @@
           "default": 100,
           "description": "Delay after a save before the run starts (coalesces multi-file saves)."
         },
+        "hyperjest.runOnExternalChanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run affected tests when files change on disk outside VS Code (an AI agent, git, another editor). Large bursts, such as a branch switch, only mark results stale."
+        },
         "hyperjest.smartStart": {
           "type": "string",
           "enum": [

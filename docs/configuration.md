@@ -18,6 +18,11 @@ stale until a subsequent run refreshes them. Use `hyperjest.runMode: "onSave"` t
 saving, or `"manual"` to disable automatic runs. Pausing retains pending changes for Resume;
 stopping or cancelling all runs discards pending work.
 
+Files written by other programs (an AI agent, git, another editor) run like saves. A closed file is
+picked up by a file watcher; an open file without unsaved edits runs when VS Code reloads it, in
+`onType` and `onSave` modes alike. More than 50 files changing at once (a branch switch, a stash)
+only marks results stale. Set `hyperjest.runOnExternalChanges: false` to turn this off.
+
 ## Affected test selection
 
 Source-function body edits rerun only the tests that executed those functions when reliable per-test

@@ -1,10 +1,12 @@
 /**
  * RunCoordinator: the heart of HyperJest's host side. Owns the run queue, dispatches test files to
  * warm workers (or the CLI engine), routes results into the ResultStore, and implements the live
- * behaviours: on-type / on-save affected runs from unsaved buffers, Smart Start, continuous runs,
- * snapshot updates, debugging and cancellation.
+ * behaviours: on-type / on-save affected runs from unsaved buffers and disk writes made outside
+ * VS Code, Smart Start, continuous runs, snapshot updates, debugging and cancellation.
  */
+import * as fs from 'fs';
 import * as path from 'path';
+import picomatch from 'picomatch';
 import { scopedMessage } from './core/hyperConfig';
 import * as vscode from 'vscode';
 import type { Logger } from './core/logger';
@@ -19,12 +21,17 @@ import { findTestAtLine, testFullNames } from './core/testIds';
 import { parseTestKey } from './core/protocol';
 import type { ResultStore } from './results/resultStore';
 import { WorkerInitError, type WorkerHandle, type WorkerPool } from './workerPool';
-import { ProjectRegistry } from './discovery/projectRegistry';
+import { ProjectRegistry, TOOLCHAIN_FILE_NAME } from './discovery/projectRegistry';
 import { OverlayTracker } from './overlay';
 import { DocumentIndex } from './documents';
 import { findRelatedTests, runCli, type CliRunHandle } from './cliEngine';
 import { startDebugSession } from './debug';
 import type { CancellationLike, RunHandle, RunOptions, RunOutcome, RunReason, RunnerApi, RunnerState, SnapshotScope } from './runnerApi';
+
+/** Disk events arriving within this window are handled together. */
+const DISK_BATCH_MS = 50;
+/** A disk batch larger than this (branch switch, stash, codegen) only marks results stale. */
+const DISK_BURST_LIMIT = 50;
 
 const PRIORITY: Record<RunReason, number> = { explicit: 0, failing: 0, continuous: 1, onType: 2, affected: 2, onSave: 3, open: 4, smartStart: 5 };
 
@@ -68,7 +75,8 @@ interface ActiveRun {
 
 interface LiveBatch {
   revision: number;
-  changes: Map<string, { document: vscode.TextDocument; reason: 'onType' | 'onSave'; readyAt: number }>;
+  /** `text` reads the editor buffer (or the disk text of a closed file) when the batch is flushed. */
+  changes: Map<string, { text: () => string; reason: 'onType' | 'onSave'; readyAt: number }>;
 }
 
 let seq = 0;
@@ -92,6 +100,10 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   /** One debounced batch per project, retained while that project's tests are running. */
   private readonly liveChanges = new Map<string, LiveBatch>();
   private readonly livePlanning = new Set<string>();
+  /** Disk writes to source/test files, collected for DISK_BATCH_MS: path -> latest kind. */
+  private readonly diskChanges = new Map<string, 'change' | 'create' | 'delete'>();
+  private diskTimer: NodeJS.Timeout | undefined;
+  private excludeMatcher: { globs: readonly string[]; match: (p: string) => boolean } | undefined;
   private readonly deferredPlanning = new Set<string>();
   private requestEpoch = 0;
   private readonly disposables: vscode.Disposable[] = [];
@@ -119,8 +131,15 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       p => registry.projectsFor(p).map(e => e.spec.id),
       (projectId, changes) => this.sendOverlay(projectId, changes),
     );
+    // Writes by other programs (agents, git, other editors) reach no document event while the file is closed.
+    const diskWatcher = vscode.workspace.createFileSystemWatcher('**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,json,snap}');
     this.disposables.push(
       this.overlay,
+      diskWatcher,
+      diskWatcher.onDidChange(uri => this.onDiskChange(uri, 'change')),
+      diskWatcher.onDidCreate(uri => this.onDiskChange(uri, 'create')),
+      diskWatcher.onDidDelete(uri => this.onDiskChange(uri, 'delete')),
+      { dispose: () => clearTimeout(this.diskTimer) },
       { dispose: pool.on(e => this.onPoolEvent(e)) },
       registry.onDidChange(e => this.onRegistryEvent(e)),
       vscode.workspace.onDidChangeTextDocument(e => this.onDocumentChanged(e.document, e.contentChanges.length > 0)),
@@ -786,8 +805,10 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
   // ------------------------------------------------------------------ live behaviour
 
   private isInteresting(doc: vscode.TextDocument): boolean {
-    if (doc.uri.scheme !== 'file') return false;
-    const p = doc.uri.fsPath;
+    return doc.uri.scheme === 'file' && this.isInterestingPath(doc.uri.fsPath);
+  }
+
+  private isInterestingPath(p: string): boolean {
     return /\.(?:[cm]?[jt]sx?|json|snap)$/.test(p) && !p.includes(`${path.sep}node_modules${path.sep}`) && !!this.registry.projectIdFor(p);
   }
 
@@ -835,6 +856,12 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     const s = this.settings();
     if (this.registry.isTestFile(p)) this.docs.update(p, doc.getText());
     this.store.markStale(p);
+    // A clean buffer matches the disk: VS Code reloaded a file another program wrote (or an undo
+    // reached the saved text). That is a save, in every run mode but manual.
+    if (!doc.isDirty && s.runOnExternalChanges) {
+      if (s.runMode !== 'manual') this.scheduleLiveChange(p, () => doc.getText(), 'onSave', s.onSaveDebounceMs);
+      return;
+    }
     if (s.runMode !== 'onType') {
       // A saved version waiting to run is no longer current. In on-save mode, wait for another save.
       for (const [projectId, batch] of this.liveChanges) if (batch.changes.delete(p)) {
@@ -843,7 +870,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
       }
       return;
     }
-    this.scheduleLiveChange(doc, 'onType', s.onTypeDebounceMs);
+    this.scheduleLiveChange(p, () => doc.getText(), 'onType', s.onTypeDebounceMs);
   }
 
   private onDocumentSaved(doc: vscode.TextDocument): void {
@@ -855,17 +882,56 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     const text = doc.getText();
     // An automatic run already ran (or is running) the affected tests for exactly this text: saving changes nothing.
     if (this.liveRunHandled(p, text)) return;
-    this.scheduleLiveChange(doc, 'onSave', s.onSaveDebounceMs);
+    this.scheduleLiveChange(p, () => doc.getText(), 'onSave', s.onSaveDebounceMs);
   }
 
-  private scheduleLiveChange(document: vscode.TextDocument, reason: 'onType' | 'onSave', delay: number): void {
-    for (const entry of this.registry.projectsFor(document.uri.fsPath)) {
+  private onDiskChange(uri: vscode.Uri, kind: 'change' | 'create' | 'delete'): void {
+    const p = uri.fsPath;
+    if (!this.started || uri.scheme !== 'file' || !this.isInterestingPath(p) || TOOLCHAIN_FILE_NAME.test(path.basename(p))) return;
+    const globs = this.settings().discovery.exclude;
+    if (this.excludeMatcher?.globs !== globs) this.excludeMatcher = { globs, match: globs.length ? picomatch([...globs], { dot: true }) : () => false };
+    if (this.excludeMatcher.match(p)) return;
+    // An atomic write (temp file renamed over the target) reports a create, possibly followed by a change.
+    this.diskChanges.set(p, kind === 'change' && this.diskChanges.get(p) === 'create' ? 'create' : kind);
+    this.diskTimer ??= setTimeout(() => {
+      this.diskTimer = undefined;
+      void this.flushDiskChanges().catch(error => this.log.warn(`disk changes: ${(error as Error).message}`));
+    }, DISK_BATCH_MS);
+  }
+
+  private async flushDiskChanges(): Promise<void> {
+    const changes = [...this.diskChanges];
+    this.diskChanges.clear();
+    if (!this.started) return;
+    const added = changes.filter(([, kind]) => kind !== 'change').map(([p]) => vscode.Uri.file(p));
+    if (added.length) this.onFilesChanged(added);
+    // Open documents report their own saves and reloads.
+    const open = new Set(vscode.workspace.textDocuments.filter(d => d.uri.scheme === 'file').map(d => d.uri.fsPath));
+    const edited = changes.filter(([p, kind]) => kind !== 'delete' && !open.has(p)).map(([p]) => p);
+    if (!edited.length) return;
+    const s = this.settings();
+    if (!s.runOnExternalChanges || s.runMode === 'manual' || edited.length > DISK_BURST_LIMIT) {
+      for (const p of edited) this.store.markStale(p);
+      if (edited.length > DISK_BURST_LIMIT) this.log.info(`${edited.length} files changed on disk: automatic run skipped`);
+      return;
+    }
+    for (const p of edited) {
+      let text: string;
+      try { text = await fs.promises.readFile(p, 'utf8'); } catch { continue; }
+      if (!this.started || this.liveRunHandled(p, text)) continue;
+      this.store.markStale(p);
+      this.scheduleLiveChange(p, () => text, 'onSave', this.settings().onSaveDebounceMs);
+    }
+  }
+
+  private scheduleLiveChange(p: string, text: () => string, reason: 'onType' | 'onSave', delay: number): void {
+    for (const entry of this.registry.projectsFor(p)) {
       const projectId = entry.spec.id;
       let batch = this.liveChanges.get(projectId);
       if (!batch) this.liveChanges.set(projectId, batch = { revision: 0, changes: new Map() });
       batch.revision++;
       const now = Date.now();
-      batch.changes.set(document.uri.fsPath, { document, reason, readyAt: now + delay });
+      batch.changes.set(p, { text, reason, readyAt: now + delay });
       // Saving may accelerate this path, but cannot shorten another buffer's typing pause.
       const readyAt = Math.max(...[...batch.changes.values()].map(change => change.readyAt));
       const timer = this.changeTimers.get(projectId);
@@ -903,7 +969,7 @@ export class RunCoordinator implements RunnerApi, vscode.Disposable {
     let committed = false;
     try {
       await Promise.all([...batch.changes].map(([p, change]) =>
-        this.runAffectedProject(p, change.document.getText(), change.reason, projectId, isCurrent)));
+        this.runAffectedProject(p, change.text(), change.reason, projectId, isCurrent)));
       if (isCurrent()) { committed = true; this.liveChanges.delete(projectId); }
     } catch (error) {
       this.log.warn(`live tests: ${(error as Error).message}`);

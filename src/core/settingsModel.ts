@@ -25,6 +25,7 @@ export interface HyperJestSettings {
   runMode: RunMode;
   onTypeDebounceMs: number;
   onSaveDebounceMs: number;
+  runOnExternalChanges: boolean;
   smartStart: SmartStart;
   liveRun: { maxTestFilesPerEdit: number };
   engine: Engine;
@@ -63,6 +64,7 @@ export const DEFAULT_SETTINGS: HyperJestSettings = {
   runMode: 'onType',
   onTypeDebounceMs: 500,
   onSaveDebounceMs: 100,
+  runOnExternalChanges: true,
   smartStart: 'always',
   liveRun: { maxTestFilesPerEdit: 8 },
   engine: 'auto',

@@ -169,6 +169,7 @@ export const __state = {
   shown: [] as any[],
   contentProviders: new Map<string, any>(),
   controllers: [] as any[],
+  watchers: [] as any[],
   reset() {
     this.decorationTypes = [];
     this.statusBarItems = [];
@@ -178,6 +179,7 @@ export const __state = {
     this.shown = [];
     this.contentProviders = new Map();
     this.controllers = [];
+    this.watchers = [];
   },
 };
 
@@ -217,6 +219,18 @@ export const workspace = {
   registerTextDocumentContentProvider(scheme: string, provider: any) {
     __state.contentProviders.set(scheme, provider);
     return new Disposable(() => __state.contentProviders.delete(scheme));
+  },
+  /** `__state.watchers[i].fire('change' | 'create' | 'delete', uri)` simulates a disk event. */
+  createFileSystemWatcher(pattern: string) {
+    const emitters = { change: new EventEmitter<Uri>(), create: new EventEmitter<Uri>(), delete: new EventEmitter<Uri>() };
+    const watcher = {
+      pattern,
+      onDidChange: emitters.change.event, onDidCreate: emitters.create.event, onDidDelete: emitters.delete.event,
+      fire: (kind: keyof typeof emitters, uri: Uri) => emitters[kind].fire(uri),
+      dispose() { __state.watchers = __state.watchers.filter(w => w !== watcher); },
+    };
+    __state.watchers.push(watcher);
+    return watcher;
   },
 };
 
