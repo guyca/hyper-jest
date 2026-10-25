@@ -60,6 +60,11 @@ function filteredMatcher(cfg: Parameters<typeof applyCliFilters>[0], spec: Proje
   };
 }
 
+/** Toolchain files watched on disk: an edit recycles the workers of the projects they configure. */
+const TOOLCHAIN_FILE_GLOB = '**/{package.json,jest.config.*,jest.*.config.*,hyperjest.config.js,hyperjest.*.config.js,wallaby.js,wallaby.*.js,babel.config.*,.babelrc,.babelrc.*,tsconfig.json,tsconfig.*.json,.swcrc,yarn.lock,package-lock.json,pnpm-lock.yaml}';
+/** Basenames matched by TOOLCHAIN_FILE_GLOB (other disk watchers leave these to the registry). */
+export const TOOLCHAIN_FILE_NAME = /^(?:package\.json|jest(?:\..+)?\.config\..+|hyperjest(?:\..+)?\.config\.js|wallaby(?:\..+)?\.js|babel\.config\..+|\.babelrc(?:\..+)?|tsconfig(?:\..+)?\.json|\.swcrc|yarn\.lock|package-lock\.json|pnpm-lock\.yaml)$/;
+
 /**
  * Knows every Jest project in the workspace: discovers package.json files, classifies them (pure
  * core/projectSpec), maps files to projects, boots a project's first worker on demand to learn its
@@ -92,7 +97,7 @@ export class ProjectRegistry implements vscode.Disposable {
     private readonly discovery: DiscoveryExecutor,
   ) {
     this.configCache = new ConfigCache(memento);
-    const watcher = vscode.workspace.createFileSystemWatcher('**/{package.json,jest.config.*,jest.*.config.*,hyperjest.config.js,hyperjest.*.config.js,wallaby.js,wallaby.*.js,babel.config.*,.babelrc,.babelrc.*,tsconfig.json,tsconfig.*.json,.swcrc,yarn.lock,package-lock.json,pnpm-lock.yaml}');
+    const watcher = vscode.workspace.createFileSystemWatcher(TOOLCHAIN_FILE_GLOB);
     const onToolchain = (uri: vscode.Uri) => this.onToolchainFileChanged(uri.fsPath);
     this.disposables.push(watcher, watcher.onDidChange(onToolchain), watcher.onDidCreate(onToolchain), watcher.onDidDelete(onToolchain));
     this.disposables.push(vscode.workspace.onDidChangeWorkspaceFolders(() => void this.refresh()));
