@@ -229,7 +229,7 @@ jobs:
           path: ${{ runner.temp }}/patch
       - name: Reconstruct master merge without executing project code
         run: node trusted/.github/scripts/jest-automation/repair.mjs prepare
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.REPAIR_APP_ID }}
