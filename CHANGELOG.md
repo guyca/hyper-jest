@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0
+
+- Run affected tests when files change on disk outside VS Code (AI agents, git, other editors), including reloaded open files in on-save mode. New setting `hyperjest.runOnExternalChanges` (default on).
+- Fix deleted or renamed test files and folders: their results are removed, and tests that depended on a deleted file re-run.
+
 ## 0.3.0
 
 - Run affected tests after 500 ms without typing, coalesce edits per project, and continue remaining affected files automatically in bounded batches.
@@ -17,8 +22,6 @@
 
 ## Unreleased
 
-- Deleting or renaming a test file or folder removes its results, and tests that depended on a deleted file re-run.
-- Run affected tests when files change on disk outside VS Code (AI agents, git, other editors), including reloaded open files in on-save mode. New setting `hyperjest.runOnExternalChanges` (default on).
 - Project discovery now uses ordinary Jest resolution and explicit project configuration for custom tooling. Removed vendor-specific integrations and defaults.
 - Development fixtures, documentation, and validation tools are portable. External parser validation requires explicitly supplied directory paths.
 
